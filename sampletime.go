@@ -12,6 +12,7 @@ var (
 )
 
 // Returns the precision of time measurements obtained via SampleTime() on the runtime system in nanoseconds.
+// Should return 100ns on Windows systems, and typically between 20ns and 100ns on Linux and MacOS systems.
 func GetSampleTimePrecision() int64 {
 	if precision == int64(-1) {
 		precision = calcMinTimeSample()
