@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"runtime"
 
 	"github.com/TomTonic/rtcompare"
 )
@@ -16,18 +17,16 @@ func main() {
 	)
 
 	rng := rtcompare.DPRNG{State: uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1)} // avoid zero seed
-	safeState := rng.State
 
+	// Initialitze two working arrays
 	workArrayMedian := make([]float64, N)
+	safeState := rng.State
 	fillArray(workArrayMedian, rng) // rng is passed by value here so we should not need to safeguard its state
 	if safeState != rng.State {
 		panic("rng state was modified unexpectedly")
 	}
 	workArrayQuick := make([]float64, N)
 	fillArray(workArrayQuick, rng)
-	if safeState != rng.State {
-		panic("rng state was modified unexpectedly")
-	}
 
 	// Warm-up both methods
 	_ = rtcompare.Median(workArrayMedian)
@@ -38,22 +37,35 @@ func main() {
 	var timesQuick []float64
 
 	for range repeats {
-		rng = rtcompare.DPRNG{State: uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1)} // set rng to a new state for each timing sample
+		// Set rng to a new state for each timing sample
+		rng = rtcompare.DPRNG{State: uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1)}
+
+		// make sure to avoid GC noise
+		runtime.GC()
 
 		// Measure Median
 		t1 := rtcompare.SampleTime()
+		// we neet to measure multiple iterations of the function to make sure the time measurement
+		// is not polluted by the timer's resolution too much (quantization noise)
 		for range innerLoops {
-			fillArray(workArrayMedian, rng) // refresh the data in the working array - this function has constant runtime
+			// Refresh the data in the working array - this function has constant runtime.
+			// Even though Median does not mutate its input we need to do this for the results to be comparable.
+			fillArray(workArrayMedian, rng)
 			_ = rtcompare.Median(workArrayMedian)
 		}
 		t2 := rtcompare.SampleTime()
 		durMedian := float64(rtcompare.DiffTimeStamps(t1, t2)) / float64(innerLoops)
 		timesMedian = append(timesMedian, durMedian)
 
-		// Measure QuickMedian (mutates input)
+		// the Median function allocates memory, so we trigger a GC cycle again to reduce noise
+		runtime.GC()
+
+		// Measure QuickMedian
 		t3 := rtcompare.SampleTime()
 		for range innerLoops {
-			fillArray(workArrayQuick, rng) // refresh the data in the working array - this function has constant runtime
+			// Refresh the data in the working array - this function has constant runtime.
+			// This is necessary as QuickMedian mutates its input. On the other hand, it does not allocate extra memory.
+			fillArray(workArrayQuick, rng)
 			_ = rtcompare.QuickMedian(workArrayQuick)
 		}
 		t4 := rtcompare.SampleTime()
