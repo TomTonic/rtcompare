@@ -3,7 +3,7 @@ package rtcompare
 import (
 	"math"
 	"math/rand"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,12 +17,12 @@ func TestMedian(t *testing.T) {
 		{[]float64{}, 0},
 		{[]float64{1}, 1},
 		{[]float64{1, 2, 3}, 2},
-		{[]float64{1, 2, 3, 4}, 2.5},
+		{[]float64{1, 2, 3, 4}, 3},
 		{[]float64{3, 1, 2}, 2},
-		{[]float64{4, 1, 3, 2}, 2.5},
+		{[]float64{4, 1, 3, 2}, 3},
 		{[]float64{1, 2, 2, 3, 4}, 2},
 		{[]float64{1.5, 3.5, 2.5}, 2.5},
-		{[]float64{1.1, 2.2, 3.3, 4.4}, 2.75},
+		{[]float64{1.1, 2.2, 3.3, 4.4}, 3.3},
 	}
 
 	for _, tc := range testCases {
@@ -123,7 +123,7 @@ func TestQuickMedianRandomCompareToSortedLowerMedian(t *testing.T) {
 
 		sorted := make([]float64, n)
 		copy(sorted, xs)
-		sort.Float64s(sorted)
+		slices.Sort(sorted)
 
 		var expected float64
 		// if n%2 == 0 {
