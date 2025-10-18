@@ -3,7 +3,7 @@ package rtcompare
 import (
 	"math"
 	"math/rand"
-	"sort"
+	"slices"
 )
 
 func Median(data []float64) float64 {
@@ -12,12 +12,9 @@ func Median(data []float64) float64 {
 	}
 	dataCopy := make([]float64, len(data))
 	copy(dataCopy, data)
-	sort.Float64s(dataCopy)
+	slices.Sort(dataCopy)
 
 	l := len(dataCopy)
-	if l%2 == 0 {
-		return (dataCopy[l/2-1] + dataCopy[l/2]) / 2
-	}
 	return dataCopy[l/2]
 }
 
