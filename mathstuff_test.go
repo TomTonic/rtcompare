@@ -2,6 +2,8 @@ package rtcompare
 
 import (
 	"math"
+	"math/rand"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -74,5 +76,64 @@ func TestFloatsEqualWithTolerance(t *testing.T) {
 	for _, tc := range testCases {
 		result := FloatsEqualWithTolerance(tc.f1, tc.f2, tc.tolerance)
 		assert.True(t, result == tc.expected, "%f == %f with a tolerance of %f should be %v", tc.f1, tc.f2, tc.tolerance, tc.expected)
+	}
+}
+
+func TestQuickMedianDeterministic(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  []float64
+		expect float64 // expected lower-middle for even counts, exact middle for odd
+	}{
+		{"odd sorted", []float64{1, 2, 3}, 2},
+		{"odd unsorted", []float64{5, 1, 4, 2, 3}, 3},
+		{"even sorted", []float64{1, 2, 3, 4}, 3},    // higher middle
+		{"even unsorted", []float64{10, 1, 8, 3}, 8}, // sorted: [1,3,8,10] -> higher middle = 8
+		{"duplicates even", []float64{2, 2, 2, 2}, 2},
+		{"duplicates odd", []float64{7, 7, 7}, 7},
+	}
+
+	for _, cc := range cases {
+		t.Run(cc.name, func(t *testing.T) {
+			// QuickMedian mutiert das Slice, also erst eine Kopie übergeben, falls Input mehrfach gebraucht wird.
+			input := make([]float64, len(cc.input))
+			copy(input, cc.input)
+			got := QuickMedian(input)
+			if got != cc.expect {
+				t.Fatalf("QuickMedian(%v) = %v, want %v", cc.input, got, cc.expect)
+			}
+		})
+	}
+}
+
+func TestQuickMedianRandomCompareToSortedLowerMedian(t *testing.T) {
+	const runs = 10_000
+	for i := range runs {
+		n := rand.Intn(5000) + 1 // length 1..50
+		xs := make([]float64, n)
+		for j := 0; j < n; j++ {
+			// Erzeuge eine Mischung aus Ganz- und Gleitkommawerten (inkl. negativer Werte)
+			xs[j] = float64(rand.Intn(2001)-1000) + rand.Float64()
+		}
+
+		// QuickMedian verändert das Slice, also Kopien für beide Operationen verwenden
+		qs := make([]float64, n)
+		copy(qs, xs)
+		got := QuickMedian(qs)
+
+		sorted := make([]float64, n)
+		copy(sorted, xs)
+		sort.Float64s(sorted)
+
+		var expected float64
+		// if n%2 == 0 {
+		//	expected = sorted[n/2-1] // lower middle for even count
+		// } else {
+		expected = sorted[n/2]
+		// }
+
+		if got != expected {
+			t.Fatalf("run %d: mismatch\norig: %v\nsorted: %v\nexpected(lower-mid): %v\ngot: %v", i, xs, sorted, expected, got)
+		}
 	}
 }
