@@ -25,3 +25,11 @@ func (thisState *DPRNG) Uint64() uint64 {
 	thisState.Round++
 	return x * 0x2545F4914F6CDD1D
 }
+
+// Float64 returns a pseudo-random float64 in the range [0.0, 1.0) like Go’s math/rand.Float64().
+// It has a deterministic (i.e. constant) runtime and a high probability to be inlined by the compiler.
+// The generated float64 values are uniformly distributed in the range [0.0, 1.0) with the effective precision of 53 bits (IEEE 754 compliant).
+func (thisState *DPRNG) Float64() float64 {
+	var u64 uint64 = thisState.Uint64()
+	return float64(u64>>11) * (1.0 / (1 << 53)) // use the top 53 bits for a float64 in [0.0, 1.0)
+}
