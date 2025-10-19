@@ -2,7 +2,6 @@ package rtcompare
 
 import (
 	"math"
-	"math/rand"
 	"slices"
 )
 
@@ -69,11 +68,7 @@ func partition(xs []float64, low, high uint64) uint64 {
 // For k = len(xs)/2, it returns the median.
 // see https://en.wikipedia.org/wiki/Quickselect
 func quickselect(xs []float64, k uint64) float64 {
-	rng := DPRNG{State: rand.Uint64()}
-	for rng.State == 0 {
-		rng.State = rand.Uint64()
-	}
-
+	rng := NewDPRNG()
 	low, high := uint64(0), uint64(len(xs)-1)
 	for low <= high {
 		pivotIndex := rng.Uint64()%(high-low+1) + low

@@ -2,7 +2,6 @@ package rtcompare
 
 import (
 	"fmt"
-	"math/rand"
 	"slices"
 )
 
@@ -43,11 +42,7 @@ func CompareRuntimes(sampleA, sampleB []float64, relativeSpeedupsToTest []float6
 }
 
 func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
-	if prngSeed == 0 {
-		prngSeed = uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1) // avoid zero seed
-	}
-	rng := DPRNG{State: prngSeed}
-
+	rng := NewDPRNG(prngSeed)
 	n := len(xs)
 	sample := make([]float64, n)
 	for i := range n {
