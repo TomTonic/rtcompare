@@ -1,5 +1,7 @@
 package rtcompare
 
+import "math/rand"
+
 // DPRNG is a Deterministic Pseudo-Random Number Generator based on the xorshift* algorithm
 // (see https://en.wikipedia.org/wiki/Xorshift#xorshift*).
 // This randum number generator is deterministic in the sequence of numbers it generates. It has a period of 2^64-1,
@@ -12,6 +14,23 @@ package rtcompare
 type DPRNG struct {
 	State uint64
 	Round uint64 // for debugging purposes
+}
+
+// NewDPRNG creates a new DPRNG instance.
+// If no seed is provided, it initializes the state with a random non-zero value.
+// If the provided seed is zero, it initializes the state with a random non-zero value.
+// Otherwise, it uses the provided seed value.
+func NewDPRNG(seed ...uint64) DPRNG {
+	result := DPRNG{}
+	if len(seed) == 0 {
+		result.State = uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1) // initialize with a random number != 0
+	} else {
+		result.State = seed[0]
+		if result.State == 0 {
+			result.State = uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1) // initialize with a random number != 0
+		}
+	}
+	return result
 }
 
 // This function returns the next pseudo-random number in the sequence.

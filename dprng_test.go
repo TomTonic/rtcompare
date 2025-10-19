@@ -8,8 +8,30 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestNewDPRNG_NoSeed_GeneratesNonZero(t *testing.T) {
+	prng := NewDPRNG()
+	if prng.State == 0 {
+		t.Errorf("Expected non-zero state when no seed is provided, got 0")
+	}
+}
+
+func TestNewDPRNG_ZeroSeed_GeneratesNonZero(t *testing.T) {
+	prng := NewDPRNG(0)
+	if prng.State == 0 {
+		t.Errorf("Expected non-zero state when seed is 0, got 0")
+	}
+}
+
+func TestNewDPRNG_WithValidSeed(t *testing.T) {
+	seed := uint64(42)
+	prng := NewDPRNG(seed)
+	if prng.State != seed {
+		t.Errorf("Expected state %d, got %d", seed, prng.State)
+	}
+}
+
 func TestPrngSeqLength(t *testing.T) {
-	state := DPRNG{State: 0x1234567890ABCDEF}
+	state := NewDPRNG(0x1234567890ABCDEF)
 	limit := uint32(30_000_000)
 	set := set3.EmptyWithCapacity[uint64](limit * 7 / 5)
 	counter := uint32(0)
@@ -21,8 +43,8 @@ func TestPrngSeqLength(t *testing.T) {
 }
 
 func TestPrngDeterminism(t *testing.T) {
-	state1 := DPRNG{State: 0x1234567890ABCDEF}
-	state2 := DPRNG{State: 0x1234567890ABCDEF} // create two differnet instances with the same seed
+	state1 := NewDPRNG(0x1234567890ABCDEF)
+	state2 := NewDPRNG(0x1234567890ABCDEF) // create two differnet instances with the same seed
 	limit := 30_000_000
 	for i := range limit {
 		v1 := state1.Uint64()
@@ -44,8 +66,8 @@ func TestPrngDeterminism(t *testing.T) {
 }
 
 func TestFloat64Range(t *testing.T) {
-	rng := DPRNG{State: 12345}
-	for i := 0; i < 10000; i++ {
+	rng := NewDPRNG(0x1234567890ABCDEF)
+	for range 100_000 {
 		x := rng.Float64()
 		if x < 0.0 || x >= 1.0 || math.IsNaN(x) || math.IsInf(x, 0) {
 			t.Errorf("Float64 out of range: %f", x)
@@ -54,10 +76,10 @@ func TestFloat64Range(t *testing.T) {
 }
 
 func TestFloat64Determinism(t *testing.T) {
-	rng1 := DPRNG{State: 42}
-	rng2 := DPRNG{State: 42}
+	rng1 := NewDPRNG(0x1234567890ABCDEF)
+	rng2 := NewDPRNG(0x1234567890ABCDEF)
 
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		x1 := rng1.Float64()
 		x2 := rng2.Float64()
 		if x1 != x2 {
@@ -67,7 +89,7 @@ func TestFloat64Determinism(t *testing.T) {
 }
 
 func TestFloat64Distribution(t *testing.T) {
-	rng := DPRNG{State: 999}
+	rng := NewDPRNG(0x1234567890ABCDEF)
 	N := 1_000_000
 	var sum float64
 
@@ -81,7 +103,7 @@ func TestFloat64Distribution(t *testing.T) {
 }
 
 func TestFloat64Precision(t *testing.T) {
-	rng := DPRNG{State: 777}
+	rng := NewDPRNG(0x1234567890ABCDEF)
 	seen := make(map[float64]bool)
 	for i := 0; i < 100000; i++ {
 		x := rng.Float64()

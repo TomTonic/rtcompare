@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
 	"runtime"
 
 	"github.com/TomTonic/rtcompare"
@@ -16,7 +15,7 @@ func main() {
 		precisionLevel = 10_000 // bootstrap repetitions
 	)
 
-	rng := rtcompare.DPRNG{State: uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1)} // avoid zero seed
+	rng := rtcompare.NewDPRNG()
 
 	// Initialitze two working arrays
 	workArrayMedian := make([]float64, N)
@@ -38,7 +37,7 @@ func main() {
 
 	for range repeats {
 		// Set rng to a new state for each timing sample
-		rng = rtcompare.DPRNG{State: uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1)}
+		rng = rtcompare.NewDPRNG()
 
 		// make sure to avoid GC noise
 		runtime.GC()

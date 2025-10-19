@@ -50,7 +50,7 @@ func example() {
     var timesA, timesB []float64
     for i := 0; i < 50; i++ {
         // set up inputs deterministically using DPRNG
-        dprng := rtcompare.DPRNG{State: uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1)}
+        dprng := rtcompare.NewDPRNG()
         // measure repeatedly to reduce quantization noise
         t1 := rtcompare.SampleTime()
         for j := 0; j < 2000; j++ {
