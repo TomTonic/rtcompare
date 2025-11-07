@@ -107,6 +107,8 @@ func partition(xs []float64, low, high uint64) uint64 {
 // quickselect finds the k-th smallest element (0-based index) in expected O(n) time.
 // For k = len(xs)/2, it returns the median.
 // see https://en.wikipedia.org/wiki/Quickselect
+//
+// Note: If the input slice is empty or k is out of range the function returns math.NaN().
 func quickselect(xs []float64, k uint64) float64 {
 	if len(xs) == 0 {
 		return math.NaN()
@@ -134,6 +136,7 @@ func quickselect(xs []float64, k uint64) float64 {
 // QuickMedian returns the median in expected O(n) time.
 // In case of an odd number of elements, it returns the middle one.
 // In case of an even number of elements, it returns the higher of the two middle ones.
+// Returns math.NaN() for an empty input slice.
 // Note: This function modifies the input array. To avoid this, pass a copy.
 func QuickMedian(xs []float64) float64 {
 	if len(xs) == 0 {
