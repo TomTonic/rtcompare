@@ -2,21 +2,23 @@ package rtcompare
 
 import (
 	"math"
+	"sync"
 )
 
 const iterationsForCallibration = 10_000_000
 
 var (
 	// precision holds the precision of time measurements obtained via SampleTime() on the runtime system in nanoseconds.
-	precision = int64(-1)
+	precision     int64 = -1
+	precisionOnce sync.Once
 )
 
 // Returns the precision of time measurements obtained via SampleTime() on the runtime system in nanoseconds.
 // Should return 100ns on Windows systems, and typically between 20ns and 100ns on Linux and MacOS systems.
 func GetSampleTimePrecision() int64 {
-	if precision == int64(-1) {
+	precisionOnce.Do(func() {
 		precision = calcMinTimeSample()
-	}
+	})
 	return precision
 }
 

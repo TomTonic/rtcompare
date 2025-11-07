@@ -125,15 +125,59 @@ func TestQuickMedianRandomCompareToSortedLowerMedian(t *testing.T) {
 		copy(sorted, xs)
 		slices.Sort(sorted)
 
-		var expected float64
-		// if n%2 == 0 {
-		//	expected = sorted[n/2-1] // lower middle for even count
-		// } else {
-		expected = sorted[n/2]
-		// }
+		expected := sorted[n/2]
 
 		if got != expected {
 			t.Fatalf("run %d: mismatch\norig: %v\nsorted: %v\nexpected(lower-mid): %v\ngot: %v", i, xs, sorted, expected, got)
 		}
+	}
+}
+
+func TestQuickselectEdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		xs      []float64
+		k       uint64
+		want    float64
+		wantNaN bool
+	}{
+		// empty slice: any k is invalid -> expect NaN
+		{name: "empty, k=0", xs: []float64{}, k: 0, wantNaN: true},
+		{name: "empty, k=1", xs: []float64{}, k: 1, wantNaN: true},
+
+		// one element
+		{name: "one elem, k=0", xs: []float64{42}, k: 0, want: 42, wantNaN: false},
+		{name: "one elem, k=1 (out of bounds)", xs: []float64{42}, k: 1, wantNaN: true},
+		{name: "one elem, k=2 (out of bounds)", xs: []float64{42}, k: 2, wantNaN: true},
+
+		// two elements
+		{name: "two elems, small-first k=0", xs: []float64{1, 2}, k: 0, want: 1, wantNaN: false},
+		{name: "two elems, small-first k=1", xs: []float64{1, 2}, k: 1, want: 2, wantNaN: false},
+		{name: "two elems, large-first k=0", xs: []float64{2, 1}, k: 0, want: 1, wantNaN: false},
+		{name: "two elems, large-first k=1", xs: []float64{2, 1}, k: 1, want: 2, wantNaN: false},
+		{name: "two elems, k=2", xs: []float64{5, 5}, k: 2, wantNaN: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// call quickselect with uint64-converted k
+			got := quickselect(append([]float64(nil), tc.xs...), uint64(tc.k))
+			if tc.wantNaN {
+				if !math.IsNaN(got) {
+					t.Fatalf("%s: expected NaN, got %v", tc.name, got)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestQuickMedianEmpty(t *testing.T) {
+	got := QuickMedian([]float64{})
+	if !math.IsNaN(got) {
+		t.Fatalf("expected NaN for empty input, got %v", got)
 	}
 }

@@ -196,13 +196,16 @@ func TestBootstrapConfidenceEmptyInput(t *testing.T) {
 	reps := uint64(100)
 	seed := uint64(789)
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("Expected panic on empty input, got none")
+	conf := bootstrapConfidence(A, B, thresholds, reps, seed)
+	// With empty inputs the implementation uses NaN medians and comparisons
+	// never succeed, therefore the confidence should be 0.0 for each threshold.
+	for _, th := range thresholds {
+		if v, ok := conf[th]; !ok {
+			t.Fatalf("missing threshold %v in result", th)
+		} else if v != 0.0 {
+			t.Fatalf("expected confidence 0.0 for empty input, got %.6f", v)
 		}
-	}()
-
-	_ = bootstrapConfidence(A, B, thresholds, reps, seed)
+	}
 }
 
 func TestBootstrapConfidenceRandomSeed(t *testing.T) {

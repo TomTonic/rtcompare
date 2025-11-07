@@ -2,6 +2,7 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/TomTonic/rtcompare)](https://goreportcard.com/report/github.com/TomTonic/rtcompare)
 [![Go Reference](https://pkg.go.dev/badge/github.com/TomTonic/rtcompare.svg)](https://pkg.go.dev/github.com/TomTonic/rtcompare)
+[![Linter](https://github.com/TomTonic/rtcompare/actions/workflows/linter.yml/badge.svg)](https://github.com/TomTonic/rtcompare/actions/workflows/linter.yml)
 [![Tests](https://github.com/TomTonic/rtcompare/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/TomTonic/rtcompare/actions/workflows/coverage.yml)
 ![coverage](https://raw.githubusercontent.com/TomTonic/rtcompare/badges/.badges/main/coverage.svg)
 
@@ -96,8 +97,9 @@ The standard `testing` package is excellent for microbenchmarks and tight per-op
 - DPRNG — deterministic PRNG with Uint64 and Float64 helpers.
 - SampleTime() / DiffTimeStamps() — helpers for high-resolution timing.
 - CompareRuntimes(timesA, timesB, speedups, precision) — returns confidence estimates per requested relative speedup.
+- QuickMedian — returns the median of a Float64 slice in expected O(n) time.
 
-See the package docs and the example in cmd/rtcompare-example for detailed usage.
+See the package docs and the example in `cmd/rtcompare-example` for detailed usage.
 
 ## Contributing
 
