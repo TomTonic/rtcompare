@@ -46,3 +46,32 @@ func TestCalcMinTimeSample(t *testing.T) {
 		assert.True(t, minDiff < 100, "calcMinTimeSample should return less than 100 on non-Windows")
 	}
 }
+func TestGetSampleTimePrecisionSetsAndCaches(t *testing.T) {
+	prev := precision
+	defer func() { precision = prev }()
+
+	precision = int64(-1)
+	p1 := GetSampleTimePrecision()
+	p2 := GetSampleTimePrecision()
+
+	assert.Equal(t, p1, p2, "GetSampleTimePrecision should return a cached value on subsequent calls")
+	assert.True(t, p1 >= 15, "precision should be at least 15 ns on all systems")
+	if runtime.GOOS == "windows" {
+		assert.Equal(t, int64(100), p1, "precision should return 100 ns on Windows systems")
+	} else {
+		assert.True(t, p1 < 100, "precision should be less than 100 ns on non-Windows systems")
+	}
+}
+
+func TestGetSampleTimePrecisionRespectsCachedValue(t *testing.T) {
+	prev := precision
+	defer func() { precision = prev }()
+
+	precision = int64(123456)
+	got := GetSampleTimePrecision()
+	assert.Equal(t, int64(123456), got, "GetSampleTimePrecision should return the pre-set precision without recalculation")
+
+	// subsequent call returns same cached value
+	got2 := GetSampleTimePrecision()
+	assert.Equal(t, got, got2)
+}
