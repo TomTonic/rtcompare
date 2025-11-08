@@ -62,8 +62,9 @@ func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
 	if n == 0 {
 		return sample
 	}
-	for i := 0; i < n; i++ {
-		sample[i] = xs[rng.Uint64()%uint64(n)]
+	for i := range n {
+		// sample[i] = xs[rng.Uint64()%uint64(n)]
+		sample[i] = xs[rng.UInt32N(uint32(n))]
 	}
 	return sample
 }
