@@ -153,8 +153,8 @@ func TestBootstrapConfidenceDeterministic(t *testing.T) {
 	reps := uint64(1000)
 	seed := uint64(42)
 
-	conf1 := bootstrapConfidence(A, B, thresholds, reps, seed)
-	conf2 := bootstrapConfidence(A, B, thresholds, reps, seed)
+	conf1 := BootstrapConfidence(A, B, thresholds, reps, seed)
+	conf2 := BootstrapConfidence(A, B, thresholds, reps, seed)
 
 	if !reflect.DeepEqual(conf1, conf2) {
 		t.Errorf("Expected deterministic output with same seed, got different results")
@@ -168,7 +168,7 @@ func TestBootstrapConfidenceHighConfidence(t *testing.T) {
 	reps := uint64(1000)
 	seed := uint64(123)
 
-	conf := bootstrapConfidence(A, B, thresholds, reps, seed)
+	conf := BootstrapConfidence(A, B, thresholds, reps, seed)
 
 	if conf[0.3] < 0.95 {
 		t.Errorf("Expected high confidence for 30%% speedup, got %.2f", conf[0.3])
@@ -182,7 +182,7 @@ func TestBootstrapConfidenceLowConfidence(t *testing.T) {
 	reps := uint64(1000)
 	seed := uint64(456)
 
-	conf := bootstrapConfidence(A, B, thresholds, reps, seed)
+	conf := BootstrapConfidence(A, B, thresholds, reps, seed)
 
 	if conf[0.1] > 0.2 {
 		t.Errorf("Expected low confidence for 10%% speedup, got %.2f", conf[0.1])
@@ -196,7 +196,7 @@ func TestBootstrapConfidenceEmptyInput(t *testing.T) {
 	reps := uint64(100)
 	seed := uint64(789)
 
-	conf := bootstrapConfidence(A, B, thresholds, reps, seed)
+	conf := BootstrapConfidence(A, B, thresholds, reps, seed)
 	// With empty inputs the implementation uses NaN medians and comparisons
 	// never succeed, therefore the confidence should be 0.0 for each threshold.
 	for _, th := range thresholds {
@@ -214,8 +214,8 @@ func TestBootstrapConfidenceRandomSeed(t *testing.T) {
 	thresholds := []float64{0.1, 0.2, 0.3}
 	reps := uint64(1_000_000)
 
-	conf1 := bootstrapConfidence(A, B, thresholds, reps, 0)
-	conf2 := bootstrapConfidence(A, B, thresholds, reps, 0)
+	conf1 := BootstrapConfidence(A, B, thresholds, reps, 0)
+	conf2 := BootstrapConfidence(A, B, thresholds, reps, 0)
 
 	if reflect.DeepEqual(conf1, conf2) {
 		t.Errorf("Expected different results with random seed, got identical")
@@ -233,7 +233,7 @@ func TestBootstrapConfidenceRange(t *testing.T) {
 		reps := uint64(100)
 		seed := rand.Uint64()&0xFFFFFFFFFFFFFFE + 1 // avoid zero seed
 
-		conf := bootstrapConfidence(A, B, thresholds, reps, seed)
+		conf := BootstrapConfidence(A, B, thresholds, reps, seed)
 
 		for _, threshold := range thresholds {
 			v := conf[threshold]
@@ -274,7 +274,7 @@ func TestBootstrapConfidenceMonotony(t *testing.T) {
 	}
 
 	thresholds := []float64{x - 0.02, x - 0.01, x, x + 0.01, x + 0.02}
-	conf := bootstrapConfidence(A, B, thresholds, reps, seed)
+	conf := BootstrapConfidence(A, B, thresholds, reps, seed)
 
 	// Prüfe, ob Konfidenz streng monoton fallend ist
 	for i := 1; i < len(thresholds); i++ {
@@ -282,5 +282,112 @@ func TestBootstrapConfidenceMonotony(t *testing.T) {
 			t.Errorf("Confidence not decreasing: conf[%.2f]=%.3f > conf[%.2f]=%.3f",
 				thresholds[i], conf[thresholds[i]], thresholds[i-1], conf[thresholds[i-1]])
 		}
+	}
+}
+
+func TestBootstrapConfidence_RepsZero(t *testing.T) {
+	a := []float64{1.0, 2.0, 3.0}
+	b := []float64{1.0, 2.0, 3.0}
+	thresholds := []float64{0.0, 0.1, 0.5}
+
+	conf := BootstrapConfidence(a, b, thresholds, 0, 42)
+
+	for _, th := range thresholds {
+		v, ok := conf[th]
+		if !ok {
+			t.Fatalf("missing threshold %v in result map", th)
+		}
+		if !math.IsNaN(v) {
+			t.Fatalf("expected NaN for threshold %v when reps==0, got %v", th, v)
+		}
+	}
+}
+
+func TestBootstrapConfidence_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name       string
+		A, B       []float64
+		thresholds []float64
+		reps       uint64
+		want       map[float64]float64
+	}{
+		{
+			name:       "medA NaN",
+			A:          []float64{math.NaN(), math.NaN(), math.NaN()},
+			B:          []float64{1, 2, 3},
+			thresholds: []float64{0.0},
+			reps:       1,
+			want:       map[float64]float64{0.0: 0.0},
+		},
+		{
+			name:       "medB NaN",
+			A:          []float64{1, 2, 3},
+			B:          []float64{math.NaN(), math.NaN(), math.NaN()},
+			thresholds: []float64{0.0},
+			reps:       1,
+			want:       map[float64]float64{0.0: 0.0},
+		},
+		{
+			name:       "both zero medians",
+			A:          []float64{0, 0, 0},
+			B:          []float64{0, 0, 0},
+			thresholds: []float64{0.0, 0.1},
+			reps:       1,
+			want:       map[float64]float64{0.0: 1.0, 0.1: 0.0},
+		},
+		{
+			name:       "medA equals medB",
+			A:          []float64{5, 5, 5},
+			B:          []float64{5, 5, 5},
+			thresholds: []float64{0.0, 0.1},
+			reps:       1,
+			want:       map[float64]float64{0.0: 1.0, 0.1: 0.0},
+		},
+		{
+			name:       "both -Inf",
+			A:          []float64{math.Inf(-1), math.Inf(-1)},
+			B:          []float64{math.Inf(-1), math.Inf(-1)},
+			thresholds: []float64{0.0},
+			reps:       1,
+			want:       map[float64]float64{0.0: 1.0},
+		},
+		{
+			name:       "both +Inf",
+			A:          []float64{math.Inf(1), math.Inf(1)},
+			B:          []float64{math.Inf(1), math.Inf(1)},
+			thresholds: []float64{0.0},
+			reps:       1,
+			want:       map[float64]float64{0.0: 1.0},
+		},
+		{
+			name:       "medB zero, medA non-zero (eps branch)",
+			A:          []float64{1.0},
+			B:          []float64{0.0},
+			thresholds: []float64{0.0},
+			reps:       1,
+			want:       map[float64]float64{0.0: 0.0},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := BootstrapConfidence(tc.A, tc.B, tc.thresholds, tc.reps, 42)
+			for _, th := range tc.thresholds {
+				got, ok := conf[th]
+				if !ok {
+					t.Fatalf("missing threshold %v in result", th)
+				}
+				want := tc.want[th]
+				if math.IsNaN(want) {
+					if !math.IsNaN(got) {
+						t.Fatalf("expected NaN for threshold %v, got %v", th, got)
+					}
+				} else {
+					if got != want {
+						t.Fatalf("unexpected confidence for %s threshold %v: got %v want %v", tc.name, th, got, want)
+					}
+				}
+			}
+		})
 	}
 }
