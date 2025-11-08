@@ -52,3 +52,17 @@ func (thisState *DPRNG) Float64() float64 {
 	u64 := thisState.Uint64()
 	return float64(u64>>11) * (1.0 / (1 << 53)) // use the top 53 bits for a float64 in [0.0, 1.0)
 }
+
+// UInt32N returns a pseudo-random uint32 in the range [0, n) like Go’s math/rand.Intn().
+// Use this function for generating random indices or sizes for slices or arrays, for example.
+// This code avoids modulo arithmetics by implementing Lemire's fast alternative to the modulo reduction
+// method (see https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction/).
+// It has a deterministic (i.e. constant) runtime and a high probability to be inlined by the compiler.
+// Note: This implementation may introduce a slight bias if n is not a power of two.
+func (thisState *DPRNG) UInt32N(n uint32) uint32 {
+	u64 := thisState.Uint64()
+	l32 := u64 & 0xFFFFFFFF
+	prod := l32 * uint64(n)
+	result := uint32(prod >> 32)
+	return result
+}
