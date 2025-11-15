@@ -74,7 +74,7 @@ func main() {
 
 	// Compare the timing distributions using bootstrap
 	speedups := []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0} // relative speedups to test
-	results, err := rtcompare.CompareRuntimes(timesQuick, timesMedian, speedups, precisionLevel)
+	results, err := rtcompare.CompareSamples(timesQuick, timesMedian, speedups, precisionLevel)
 	if err != nil {
 		panic(err)
 	}
