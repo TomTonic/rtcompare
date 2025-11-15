@@ -13,26 +13,77 @@ type RTcomparisonResult struct {
 
 const MinimumDataPoints uint64 = 11
 
-// CompareRuntimes compares two samples of runtimes (in float64, e.g., milliseconds)
-// and computes the confidence that sample A is faster than sample B by at least
-// the specified relative speedups. The precisionLevel parameter controls the number of bootstrap
-// repetitions (higher values yield more precise results of the statistical tests but take longer to compute).
-// It returns a slice of RTcomparisonResult, each containing one of the given relative speedup and
-// the corresponding confidence level calculated by the statistical test.
-// If there are not enough data points in either sample, an error is returned.
-func CompareRuntimes(sampleA, sampleB []float64, relativeSpeedupsToTest []float64, precisionLevel uint64) (result []RTcomparisonResult, err error) {
-	if uint64(len(sampleA)) < MinimumDataPoints || uint64(len(sampleB)) < MinimumDataPoints {
-		return []RTcomparisonResult{}, fmt.Errorf("not enough data points: need at least 11 runtimes for each of A and B")
+// DefaultResamples is a sensible package-level default for bootstrap resamples.
+// Use this when you want a balanced trade-off between Monte-Carlo precision and
+// runtime cost. This default (5k) follows common recommendations in the
+// bootstrap literature; increase it for extreme-tail accuracy or highly precise
+// confidence estimates.
+const DefaultResamples uint64 = 5_000
+
+// CompareSamples compares two sets of scalar measurements (for example: runtimes,
+// memory footprints, or other numeric metrics) and estimates the confidence that
+// values from `measurementsA` are smaller than those from `measurementsB` by at
+// least the requested relative thresholds.
+//
+// The function is intentionally metric-agnostic: it treats each input slice as a
+// sample of independent measurements where *smaller* values indicate a better
+// outcome (this matches runtimes or memory consumption). If you have a
+// "larger-is-better" metric (e.g., throughput), transform the inputs before
+// calling this function (for example by taking the reciprocal or negating the
+// values) so that smaller means better.
+//
+// For each bootstrap replicate the implementation draws a resampled population
+// from `measurementsA` and `measurementsB`, computes their medians and evaluates
+// the relative improvement as:
+//
+//	delta = 1 - median(A_sample)/median(B_sample)
+//
+// A positive `delta` indicates that `measurementsA` are smaller than
+// `measurementsB` by that relative fraction (e.g. delta=0.2 → A is 20% smaller).
+// For each requested relative gain the function reports the fraction of replicates
+// where `delta >= threshold` as the confidence.
+//
+// Parameters:
+//
+//   - measurementsA, measurementsB: samples of scalar measurements (float64). Prefer
+//     measurements that share the same units and scale (e.g., both in milliseconds).
+//
+//   - relativeGains: relative improvement thresholds to evaluate (e.g. 0.05 means
+//     "A is at least 5% smaller than B"). If nil or empty, the function evaluates
+//     a single relative gain at 0.0 (is A smaller than B at all?).
+//
+//     Negative values in `relativeGains` are allowed and are interpreted as
+//     tolerated relative *slowdowns* of A vs. B. Concretely, a threshold `t < 0`
+//     is evaluated as `delta >= t` where `delta = 1 - median(A)/median(B)`. For
+//     example, `t = -0.05` corresponds to the statement "A is not more than 5% slower
+//     than B" (i.e., A is within 5% of B). A replicate with `delta = -0.03` would
+//     count as meeting `t = -0.05` because `-0.03 >= -0.05`.
+//
+//     Use negative thresholds when you want to ask whether A is *within* a relative
+//     tolerance of B rather than strictly faster. Zero remains the boundary
+//     "is A smaller than B?" and positive thresholds require A to be faster by at
+//     least that relative fraction.
+//
+//   - resamples: number of bootstrap resamples to run (larger → more precise estimates,
+//     longer runtime). See the note in `BootstrapConfidence` for guidance and literature
+//     references about choosing the number of resamples.
+//
+// Returns a slice of RTcomparisonResult where each entry contains the requested
+// relative threshold and the corresponding confidence in [0,1]. If either input
+// contains fewer than `MinimumDataPoints` values an error is returned.
+func CompareSamples(measurementsA, measurementsB []float64, relativeGains []float64, resamples uint64) (result []RTcomparisonResult, err error) {
+	if uint64(len(measurementsA)) < MinimumDataPoints || uint64(len(measurementsB)) < MinimumDataPoints {
+		return []RTcomparisonResult{}, fmt.Errorf("not enough data points: need at least %d measurements for each input", MinimumDataPoints)
 	}
-	if len(relativeSpeedupsToTest) == 0 {
-		relativeSpeedupsToTest = []float64{0.0}
+	if len(relativeGains) == 0 {
+		relativeGains = []float64{0.0}
 	}
 
-	slices.Sort(relativeSpeedupsToTest)
+	slices.Sort(relativeGains)
 
-	conf := BootstrapConfidence(sampleA, sampleB, relativeSpeedupsToTest, precisionLevel, 0)
+	conf := BootstrapConfidence(measurementsA, measurementsB, relativeGains, resamples, 0)
 
-	for _, t := range relativeSpeedupsToTest {
+	for _, t := range relativeGains {
 		r := RTcomparisonResult{
 			RelativeSpeedupSampleAvsSampleB: t,
 			Confidence:                      conf[t],
@@ -40,6 +91,18 @@ func CompareRuntimes(sampleA, sampleB []float64, relativeSpeedupsToTest []float6
 		result = append(result, r)
 	}
 	return result, nil
+}
+
+// CompareRuntimesDefault calls CompareRuntimes using `DefaultResamples`.
+// This convenience wrapper avoids repeating the numeric literal in callers
+// and documents the recommended default in the public API.
+func CompareSamplesDefault(measurementsA, measurementsB []float64, relativeGains []float64) (result []RTcomparisonResult, err error) {
+	return CompareSamples(measurementsA, measurementsB, relativeGains, DefaultResamples)
+}
+
+// Deprecated: Use CompareSamples instead. This function is retained for backward compatibility.
+func CompareRuntimes(measurementsA, measurementsB []float64, relativeGains []float64, resamples uint64) (result []RTcomparisonResult, err error) {
+	return CompareSamples(measurementsA, measurementsB, relativeGains, resamples)
 }
 
 // bootstrapSample returns a bootstrap sample (sampling with replacement) drawn from xs.
@@ -72,17 +135,17 @@ func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
 // BootstrapConfidence estimates the probability (confidence) that the relative speedup of A over B
 // meets or exceeds each requested threshold using bootstrap resampling.
 //
-// The function performs `reps` bootstrap replicates. In each replicate it draws a bootstrap sample
+// The function performs `resamples` bootstrap replicates. In each replicate it draws a bootstrap sample
 // from A and from B (via bootstrapSample), computes their medians and evaluates the relative speedup as:
 //
 //	delta = 1 - median(A_sample)/median(B_sample)
 //
 // A positive delta indicates A is faster than B by that relative amount. For every threshold t in
-// `thresholds` the function increments a counter when delta >= t. After all replicates it returns a map
+// `relativeGains` the function increments a counter when delta >= t. After all replicates it returns a map
 // that maps each threshold to the estimated confidence (fraction of replicates meeting delta >= t).
 //
 // Numerical and edge-case behavior (important):
-//   - If `reps` is zero the function returns a map with each threshold mapped to math.NaN().
+//   - If `resamples` is zero the function returns a map with each threshold mapped to math.NaN().
 //   - If either sample median is NaN (for example QuickMedian returned NaN for an empty sample), the
 //     replicate produces delta = NaN and that replicate does not count as meeting any threshold.
 //   - To avoid divide-by-zero and extreme ratios when median(B_sample) == 0 (or is numerically
@@ -95,29 +158,38 @@ func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
 //
 // Parameters:
 //   - A, B: observed samples (e.g. runtimes or throughputs) used as the population for bootstrap sampling.
-//   - thresholds: slice of relative-speedup thresholds to evaluate (e.g. 0.05 for 5% faster).
-//   - reps: number of bootstrap replicates to run (the greater the reps, the lower the sampling error).
+//   - relativeGains: slice of relative-speedup thresholds to evaluate (e.g. 0.05 for 5% faster).
+//   - resamples: number of bootstrap resamples to run (the greater the resamples, the lower the Monte Carlo sampling error).
 //   - prngSeed: DPRNG seed used for reproducible sampling. Use 0 to allow the function to initialize a
 //     non-deterministic seed, or provide a specific non-zero seed to reproduce results across runs.
+//
+// Note on choosing `resamples` (literature guidance): There is no one-size-fits-all value; common
+// recommendations in the bootstrap literature (Efron & Tibshirani; Davison & Hinkley) are to use at
+// least 1,000 resamples for standard-error estimation and often 5,000–10,000 (or more) when estimating
+// percentile confidence intervals, especially for tail probabilities. The Monte Carlo error of a
+// proportion estimated from resamples decreases approximately as 1/sqrt(R) where R is the number of
+// resamples, so doubling `resamples` reduces that error by about 1/sqrt(2). For many practical uses
+// `resamples` in the range 1,000–10,000 is a reasonable default; increase it when you need precise
+// confidence estimates near extreme thresholds or when you require reproducible low-variance results.
 //
 // Returns:
 //
 //	A map[float64]float64 where each key is a threshold from `thresholds` and the corresponding value is
 //	the estimated confidence in [0,1] that the relative speedup of A over B is at least that threshold.
-func BootstrapConfidence(A, B []float64, thresholds []float64, reps uint64, prngSeed uint64) (confidenceForThreshold map[float64]float64) {
+func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, prngSeed uint64) (confidenceForThreshold map[float64]float64) {
 
-	confidenceForThreshold = make(map[float64]float64, len(thresholds))
+	confidenceForThreshold = make(map[float64]float64, len(relativeGains))
 
-	if reps == 0 {
-		for _, threshold := range thresholds {
+	if resamples == 0 {
+		for _, threshold := range relativeGains {
 			confidenceForThreshold[threshold] = math.NaN()
 		}
 		return confidenceForThreshold
 	}
 
-	counts := make(map[float64]uint32, len(thresholds))
+	counts := make(map[float64]uint32, len(relativeGains))
 
-	for range reps {
+	for i := uint64(0); i < resamples; i++ {
 		sampleA := bootstrapSample(A, prngSeed)
 		sampleB := bootstrapSample(B, prngSeed)
 		medA := QuickMedian(sampleA)
@@ -142,15 +214,15 @@ func BootstrapConfidence(A, B []float64, thresholds []float64, reps uint64, prng
 			delta = 1.0 - medA/denom
 		}
 
-		for _, threshold := range thresholds {
+		for _, threshold := range relativeGains {
 			if delta >= threshold {
 				counts[threshold]++
 			}
 		}
 	}
 
-	for _, threshold := range thresholds {
-		confidenceForThreshold[threshold] = float64(counts[threshold]) / float64(reps)
+	for _, threshold := range relativeGains {
+		confidenceForThreshold[threshold] = float64(counts[threshold]) / float64(resamples)
 	}
 	return confidenceForThreshold
 }

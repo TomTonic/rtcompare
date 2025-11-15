@@ -8,14 +8,14 @@
 
 ## Statistically significant runtime comparison for codepaths in golang
 
-rtcompare is a small, focused Go library for robust runtime comparisons and lightweight benchmarking. It provides utilities to collect timing samples, compare runtime distributions using bootstrap techniques, and helper primitives (deterministic PRNG, sample timing helpers, small statistics utilities). The project is intended as a practical alternative to the standard `testing` benchmarking harness when you want reproducible, distribution-aware comparisons and confidence estimates for relative speedups.
+rtcompare is a small, focused Go library for robust runtime or memory measurement comparisons and lightweight benchmarking. It provides utilities to collect timing samples, compare sample distributions using bootstrap techniques, and helper primitives (deterministic PRNG, sample timing helpers, small statistics utilities). The project is intended as a practical alternative to the standard `testing` benchmarking harness when you want reproducible, distribution-aware comparisons and confidence estimates for relative speedups.
 
 Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, deterministic prng, go
 
 ## Features
 
-- Collect per-run timing samples for two implementations and compare their runtime distributions.
-- Compute confidence that implementation A is faster than B by at least a given relative speedup using bootstrap resampling.
+- Collect per-run timing or memory consumption samples for two implementations and compare their distributions.
+- Compute confidence that implementation A is faster or less memory consuming than B by at least a given relative gain using bootstrap resampling.
 - Deterministic DPRNG for reproducible input generation.
 - Timing helpers (SampleTime, DiffTimeStamps) and small statistics utilities (mean, median, stddev).
 - Small, dependency-light API suitable for integration into CI and micro-benchmarks.
@@ -36,7 +36,7 @@ import "github.com/TomTonic/rtcompare"
 
 ## Quickstart example
 
-This example demonstrates how to collect timing samples for two median implementations and compare them (see cmd/rtcompare-example/main.go for a full runnable example).
+This example demonstrates how to collect timing samples for two implementations candidate A and candidate B and compare them (see cmd/rtcompare-example/main.go for a full runnable example).
 
 ```go
 import (
@@ -65,8 +65,9 @@ func example() {
     }
 
     // Compare distributions using bootstrap (precision controls bootstrap repetitions)
-    speedups := []float64{0.1, 0.2, 0.5, 1.0} // relative speedups to test
-    results, err := rtcompare.CompareRuntimes(timesA, timesB, speedups, 10000)
+    speedups := []float64{0.1, 0.2, 0.5, 1.0} // relative speedups in % to test
+    // use the package default resamples or provide a numeric value
+    results, err := rtcompare.CompareSamplesDefault(timesA, timesB, speedups)
     if err != nil {
         panic(err)
     }
@@ -96,8 +97,24 @@ The standard `testing` package is excellent for microbenchmarks and tight per-op
 
 - DPRNG — deterministic PRNG with Uint64 and Float64 helpers.
 - SampleTime() / DiffTimeStamps() — helpers for high-resolution timing.
-- CompareRuntimes(timesA, timesB, speedups, precision) — returns confidence estimates per requested relative speedup.
+- CompareSamples(timesA, timesB, speedups, resamples) — returns confidence estimates per requested relative speedup. Use `rtcompare.DefaultResamples` or the convenience wrapper `rtcompare.CompareSamplesDefault` for a sensible default.
 - QuickMedian — returns the median of a Float64 slice in expected O(n) time.
+
+Note on negative `relativeGains`: Negative thresholds are allowed and are
+interpreted as tolerated relative slowdowns rather than speedups. A threshold
+of `-0.05` means "A is within 5% of B" (i.e., A is not more than 5% slower
+than B). Use negative values when you want to ask whether one implementation
+is approximately as fast as another within a relative tolerance instead of
+requiring a strict speedup.
+
+### Choosing `resamples`
+
+The number of bootstrap resamples controls the Monte‑Carlo error of the confidence estimates. Common recommendations from the bootstrap literature (Efron & Tibshirani; Davison & Hinkley) are:
+
+- Use at least 1,000 resamples for reasonable standard-error estimation.
+- Use 5,000–10,000 resamples when estimating percentile confidence intervals or when you need stability in tails.
+
+The Monte‑Carlo standard error of a proportion estimated from resamples decreases approximately as 1/sqrt(R) where R is the number of resamples. Increase `resamples` when you require low Monte‑Carlo noise (for example, precise reporting of extreme thresholds). See Efron & Tibshirani (1993) and Davison & Hinkley (1997) for more details.
 
 See the package docs and the example in `cmd/rtcompare-example` for detailed usage.
 
