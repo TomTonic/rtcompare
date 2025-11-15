@@ -12,7 +12,7 @@ import (
 func TestCompareRuntimesTooFewData(t *testing.T) {
 	A := make([]float64, 10)
 	B := make([]float64, 11)
-	_, err := CompareRuntimes(A, B, []float64{0.1}, 1000)
+	_, err := CompareSamples(A, B, []float64{0.1}, 1000)
 	if err == nil {
 		t.Errorf("Expected error for too few data points, got nil")
 	}
@@ -25,7 +25,7 @@ func TestCompareRuntimesDefaultThreshold(t *testing.T) {
 		A[i] = 100
 		B[i] = 120
 	}
-	results, err := CompareRuntimes(A, B, nil, 1000)
+	results, err := CompareSamples(A, B, nil, 1000)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestCompareRuntimesConfidenceRange(t *testing.T) {
 		B[i] = 120
 	}
 	thresholds := []float64{0.1, 0.2, 0.3}
-	results, err := CompareRuntimes(A, B, thresholds, 1000)
+	results, err := CompareSamples(A, B, thresholds, 1000)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestCompareRuntimesConfidenceMonotonicity(t *testing.T) {
 		B[i] = 130 // A ist deutlich schneller
 	}
 	thresholds := []float64{0.1, 0.2, 0.3, 0.4}
-	results, err := CompareRuntimes(A, B, thresholds, 1000)
+	results, err := CompareSamples(A, B, thresholds, 1000)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -389,5 +389,49 @@ func TestBootstrapConfidence_EdgeCases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Tests for negative values in relativeGains. These use deterministic, identical
+// samples so every bootstrap replicate produces the same medians and the
+// resulting confidence is either 0.0 or 1.0 depending on the threshold.
+func TestBootstrapConfidence_NegativeRelativeGains_DeterministicIdenticalSamples(t *testing.T) {
+	A := []float64{103, 103, 103, 103, 103}
+	B := []float64{100, 100, 100, 100, 100}
+
+	thresholds := []float64{-0.05, 0.0, 0.01}
+	// Use a small number of resamples; samples are identical so every replicate is the same.
+	resamples := uint64(10)
+	seed := uint64(42)
+
+	conf := BootstrapConfidence(A, B, thresholds, resamples, seed)
+
+	if got := conf[-0.05]; got != 1.0 {
+		t.Fatalf("expected confidence 1.0 for threshold -0.05, got %v", got)
+	}
+	if got := conf[0.0]; got != 0.0 {
+		t.Fatalf("expected confidence 0.0 for threshold 0.0, got %v", got)
+	}
+	if got := conf[0.01]; got != 0.0 {
+		t.Fatalf("expected confidence 0.0 for threshold 0.01, got %v", got)
+	}
+}
+
+func TestBootstrapConfidence_NegativeRelativeGains_ZeroDeltaCountsForNegative(t *testing.T) {
+	// identical medians -> delta == 0.0
+	A := []float64{100, 100, 100}
+	B := []float64{100, 100, 100}
+
+	thresholds := []float64{-0.01, 0.0}
+	resamples := uint64(5)
+	seed := uint64(7)
+
+	conf := BootstrapConfidence(A, B, thresholds, resamples, seed)
+
+	if got := conf[-0.01]; got != 1.0 {
+		t.Fatalf("expected confidence 1.0 for threshold -0.01 when delta==0, got %v", got)
+	}
+	if got := conf[0.0]; got != 1.0 {
+		t.Fatalf("expected confidence 1.0 for threshold 0.0 when delta==0, got %v", got)
 	}
 }
