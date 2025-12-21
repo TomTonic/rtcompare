@@ -121,19 +121,26 @@ func CompareRuntimes(measurementsA, measurementsB []float64, relativeGains []flo
 // len(xs) does not evenly divide the PRNG range. Also ensure xs is non-empty when
 // expecting sampled values, since index selection with len(xs)==0 would be invalid.
 //
-// This implementation uses a DPRNG from this package for reproducible sampling. Use 0 (zero)
-// as prngSeed for a random seed value, or provide a specific non-zero seed for
-// reproducible results across multiple calls.
+// This implementation uses a DPRNG from this package for reproducible sampling.
+// Provide a specific non-zero seed for reproducible results across multiple calls.
+// If prngSeed is zero, the function uses a CPRNG with cryptographic strength randomness.
 func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
-	rng := NewDPRNG(prngSeed)
 	n := len(xs)
 	sample := make([]float64, n)
 	if n == 0 {
 		return sample
 	}
-	for i := range n {
-		// sample[i] = xs[rng.Uint64()%uint64(n)]
-		sample[i] = xs[rng.UInt32N(uint32(n))]
+	if prngSeed != 0 {
+		rng := NewDPRNG(prngSeed)
+		for i := range n {
+			// sample[i] = xs[rng.Uint64()%uint64(n)]
+			sample[i] = xs[rng.UInt32N(uint32(n))]
+		}
+	} else {
+		rng := NewCPRNG(8192)
+		for i := range n {
+			sample[i] = xs[rng.Uint32N(uint32(n))]
+		}
 	}
 	return sample
 }
@@ -166,8 +173,8 @@ func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
 //   - A, B: observed samples (e.g. runtimes or throughputs) used as the population for bootstrap sampling.
 //   - relativeGains: slice of relative-speedup thresholds to evaluate (e.g. 0.05 for 5% faster).
 //   - resamples: number of bootstrap resamples to run (the greater the resamples, the lower the Monte Carlo sampling error).
-//   - prngSeed: DPRNG seed used for reproducible sampling. Use 0 to allow the function to initialize a
-//     non-deterministic seed, or provide a specific non-zero seed to reproduce results across runs.
+//   - prngSeed: DPRNG seed used for reproducible sampling. Provide a specific non-zero seed to reproduce results across runs.
+//     If prngSeed is zero, the function uses a CPRNG with cryptographic strength randomness.
 //
 // Note on choosing `resamples` (literature guidance): There is no one-size-fits-all value; common
 // recommendations in the bootstrap literature (Efron & Tibshirani; Davison & Hinkley) are to use at
