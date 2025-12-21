@@ -202,9 +202,21 @@ func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 
 	counts := make(map[float64]uint32, len(relativeGains))
 
-	for range resamples {
-		sampleA := bootstrapSample(A, prngSeed)
-		sampleB := bootstrapSample(B, prngSeed)
+	for i := uint64(0); i < resamples; i++ {
+		var seedA, seedB uint64
+		if prngSeed == 0 {
+			// Preserve any default/non-deterministic behavior of bootstrapSample when seed is zero.
+			seedA = 0
+			seedB = 0
+		} else {
+			// Derive iteration-specific, distinct seeds for A and B from the base seed.
+			iterSeed := prngSeed + i
+			seedA = iterSeed*2 + 1
+			seedB = iterSeed*2 + 2
+		}
+
+		sampleA := bootstrapSample(A, seedA)
+		sampleB := bootstrapSample(B, seedB)
 		medA := QuickMedian(sampleA)
 		medB := QuickMedian(sampleB)
 
