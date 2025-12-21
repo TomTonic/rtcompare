@@ -435,3 +435,29 @@ func TestBootstrapConfidence_NegativeRelativeGains_ZeroDeltaCountsForNegative(t 
 		t.Fatalf("expected confidence 1.0 for threshold 0.0 when delta==0, got %v", got)
 	}
 }
+
+// Test for gains that are greater than 100% (i.e., medA > 2 * medB). These use
+// deterministic, identical samples so every bootstrap replicate produces the same
+// medians and the resulting confidence is either 0.0 or 1.0 depending on the threshold.
+func TestBootstrapConfidence_HighRelativeGains_DeterministicIdenticalSamples(t *testing.T) {
+	A := []float64{100, 100, 100, 100, 100}
+	B := []float64{250, 250, 250, 250, 250}
+
+	thresholds := []float64{0.5, 0.6, 0.66667} // 2x/50% faster, 2.5x/60% faster, 3x/66,67% faster
+	// Use a small number of resamples; samples are identical so every replicate is the same.
+	resamples := uint64(10)
+	seed := uint64(42)
+
+	conf := BootstrapConfidence(A, B, thresholds, resamples, seed)
+
+	if got := conf[0.5]; got != 1.0 {
+		t.Fatalf("expected confidence 1.0 for threshold 0.5, got %v", got)
+	}
+	if got := conf[0.6]; got != 1.0 {
+		t.Fatalf("expected confidence 1.0 for threshold 0.6, got %v", got)
+	}
+	if got := conf[0.66667]; got != 0.0 {
+		t.Fatalf("expected confidence 0.0 for threshold 0.66667, got %v", got)
+	}
+
+}

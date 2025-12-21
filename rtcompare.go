@@ -6,9 +6,15 @@ import (
 	"slices"
 )
 
+// RTcomparisonResult holds the result of comparing two sets of runtime measurements.
+// For each requested relative speedup threshold it contains the estimated confidence
+// that the speedup of sample A over sample B meets or exceeds that threshold.
 type RTcomparisonResult struct {
+	// RelativeSpeedupSampleAvsSampleB is the relative speedup threshold that was evaluated.
 	RelativeSpeedupSampleAvsSampleB float64
-	Confidence                      float64
+	// Confidence is the estimated confidence (in [0,1]) that the relative speedup of sample A over sample B
+	// meets or exceeds RelativeSpeedupSampleAvsSampleB.
+	Confidence float64
 }
 
 const MinimumDataPoints uint64 = 11
@@ -189,7 +195,7 @@ func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 
 	counts := make(map[float64]uint32, len(relativeGains))
 
-	for i := uint64(0); i < resamples; i++ {
+	for range resamples {
 		sampleA := bootstrapSample(A, prngSeed)
 		sampleB := bootstrapSample(B, prngSeed)
 		medA := QuickMedian(sampleA)
@@ -225,4 +231,13 @@ func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 		confidenceForThreshold[threshold] = float64(counts[threshold]) / float64(resamples)
 	}
 	return confidenceForThreshold
+}
+
+// F2T (FactorToThreshold) converts a multiplicative speedup timesFaster (e.g. 3.0 => A is 3× faster)
+// to the internal relative‑reduction threshold used by CompareSamples and BootstrapConfidence.
+func F2T(timesFaster float64) float64 {
+	if timesFaster <= 0 || math.IsNaN(timesFaster) {
+		return math.NaN()
+	}
+	return 1.0 - 1.0/timesFaster
 }

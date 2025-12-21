@@ -16,7 +16,7 @@ type DPRNG struct {
 	Round uint64 // for debugging purposes
 }
 
-// NewDPRNG creates a new DPRNG instance.
+// NewDPRNG creates a new Deterministic Pseudo-Random Number Generator instance.
 // If no seed is provided, it initializes the state with a random non-zero value.
 // If the provided seed is zero, it initializes the state with a random non-zero value.
 // Otherwise, it uses the provided seed value.
