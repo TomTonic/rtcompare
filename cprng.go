@@ -8,7 +8,7 @@ import (
 
 // CPRNG is a cryptographically secure random number generator ("CryptographicPrecisionRNG")
 // that reads random bytes in batches to reduce the number of calls to the underlying
-// crypto/rand.Reader. This improves performance while maintaining security
+// crypto/rand.Reader (OS call). This improves performance while maintaining security
 // and provides high-precision output suitable for statistical and numerical
 // work. This RNG is thread-safe as long as each goroutine uses its own instance.
 // The memory footprint can be adjusted by changing the capBytes parameter in NewCPRNG.
@@ -21,7 +21,15 @@ type CPRNG struct {
 // The buffer is filled with random bytes upon creation and refilled as needed.
 // A larger buffer reduces the number of operating system calls to crypto/rand.Reader,
 // improving performance. A smaller buffer reduces memory usage.
+// This random number generator is not deterministic in the sequence of numbers it generates.
+// This random number generator is not deterministic in its runtime (i.e., it does not have a constant runtime as it needs to periodically refill its buffer via to crypto/rand.Reader, an OS call).
+// This random number generator is cryptographically secure (relying on crypto/rand, see https://pkg.go.dev/crypto/rand).
+// This random number generator is thread-safe as long as each goroutine uses its own instance.
+// This random number generator has a varying memory footprint (usually a few kilobytes).
 func NewCPRNG(capBytes uint32) *CPRNG {
+	if capBytes < 8 {
+		capBytes = 8 // minimum buffer size to hold at least one uint64
+	}
 	b := &CPRNG{buf: make([]byte, capBytes)}
 	if _, err := rand.Read(b.buf); err != nil {
 		panic(err)
@@ -142,12 +150,16 @@ func (c *CPRNG) Float64() float64 {
 }
 
 // Uint32N returns a non-negative pseudo-random number in the half-open interval [0,n).
-// This function avoids modulo bias and is efficient for all values of n.
+// Use this function for generating random indices or sizes for slices or arrays, for example.
+// Even though this function will probably not be inlined by the compiler, it has a
+// very efficient implementation avoiding division or modulo operations.
+// This function compensates for bias.
 // For n=0 and n=1, Uint32N returns 0.
 //
 // For implementation details, see:
-// https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction
-// https://lemire.me/blog/2016/06/30/fast-random-shuffling
+//
+//	https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction
+//	https://lemire.me/blog/2016/06/30/fast-random-shuffling
 func (c *CPRNG) Uint32N(n uint32) uint32 {
 	v := c.Uint32()
 	prod := uint64(v) * uint64(n)
