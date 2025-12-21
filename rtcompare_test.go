@@ -587,9 +587,10 @@ func TestF2T(t *testing.T) {
 
 func TestF2TEdgeCases(t *testing.T) {
 	// Test that F2T is consistent with the formula: threshold = 1 - 1/timesFaster
-	// For timesFaster > 1, the threshold should be positive and < 1
-	// For timesFaster = 1, threshold should be 0
-	// For timesFaster < 1 (but > 0), this would be a slowdown, should return NaN
+	// For timesFaster > 1, the threshold should be positive and < 1 (speedup)
+	// For timesFaster = 1, threshold should be 0 (no change)
+	// For 0 < timesFaster < 1, the threshold is negative (slowdown)
+	// For timesFaster <= 0 or NaN, returns NaN (invalid input)
 	
 	t.Run("boundary at 1", func(t *testing.T) {
 		result := F2T(1.0)
