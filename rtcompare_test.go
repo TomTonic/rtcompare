@@ -443,7 +443,7 @@ func TestBootstrapConfidence_HighRelativeGains_DeterministicIdenticalSamples(t *
 	A := []float64{100, 100, 100, 100, 100}
 	B := []float64{250, 250, 250, 250, 250}
 
-	thresholds := []float64{0.5, 0.6, 0.66667} // 2x/50% faster, 2.5x/60% faster, 3x/66,67% faster
+	thresholds := []float64{0.5, 0.6, 0.66667} // 2x/50% faster, 2.5x/60% faster, 3x/66.67% faster
 	// Use a small number of resamples; samples are identical so every replicate is the same.
 	resamples := uint64(10)
 	seed := uint64(42)
