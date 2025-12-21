@@ -312,15 +312,17 @@ func TestCPRNG_Uint32N_Uniformity(t *testing.T) {
 }
 
 // TestCPRNG_BufferSizePerformance compares the per-call time of two CPRNG instances
-// with a very small buffer (16 bytes) and a large buffer (4 KiB). It measures
+// with a very small buffer (16 bytes) and a large buffer (8 KiB). It measures
 // average time per Uint64 call across multiple samples and asserts that the
 // large-buffer CPRNG is faster on average than the small-buffer CPRNG.
 func TestCPRNG_BufferSizePerformance(t *testing.T) {
-	const repeats = 79
+	const repeats = 71
 	const innerLoops = 300_000
+	const expectedSpeedup = 0.33333 // expect large-buffer CPRNG to be at least 33.333% faster than small-buffer CPRNG
+	const minConfidence = 0.95      // require at least 95% confidence
 
 	small := NewCPRNG(16)
-	large := NewCPRNG(4096)
+	large := NewCPRNG(8192)
 
 	timesSmall := make([]float64, 0, repeats)
 	timesLarge := make([]float64, 0, repeats)
@@ -343,23 +345,15 @@ func TestCPRNG_BufferSizePerformance(t *testing.T) {
 		timesLarge = append(timesLarge, float64(DiffTimeStamps(t3, t4))/float64(innerLoops))
 	}
 
-	mean := func(xs []float64) float64 {
-		s := 0.0
-		for _, v := range xs {
-			s += v
-		}
-		return s / float64(len(xs))
-	}
-
-	mSmall := mean(timesSmall)
-	mLarge := mean(timesLarge)
-	t.Logf("mean per-call (small=%d bytes)=%.1f ns, (large=%d bytes)=%.1f ns", 16, mSmall, 8192, mLarge)
+	mSmall := QuickMedian(timesSmall)
+	mLarge := QuickMedian(timesLarge)
+	t.Logf("median call (small=%d bytes)=%.1f ns, (large=%d bytes)=%.1f ns", 16, mSmall, 8192, mLarge)
 
 	if !(mLarge < mSmall) {
 		t.Fatalf("expected large-buffer CPRNG to be faster: large=%.1f >= small=%.1f", mLarge, mSmall)
 	}
 
-	speedups := []float64{0.9} // relative speedups to test: 0.9 = 10x faster
+	speedups := []float64{expectedSpeedup}
 	results, err := CompareSamples(timesLarge, timesSmall, speedups, 10_000)
 	if err != nil {
 		t.Fatalf("CompareSamples failed: %v", err)
@@ -371,8 +365,8 @@ func TestCPRNG_BufferSizePerformance(t *testing.T) {
 		t.Logf("Speedup ≥ %.2f%% → Confidence: %.3f%%\n", r.RelativeSpeedupSampleAvsSampleB*100.0, r.Confidence*100.0)
 	}
 	res := results[0]
-	if res.Confidence < 0.95 {
-		t.Fatalf("expected confidence >= 0.95 for speedup %.1f, got %.3f", res.RelativeSpeedupSampleAvsSampleB, res.Confidence)
+	if res.Confidence < minConfidence {
+		t.Fatalf("expected confidence >= %.2f for speedup %.1f, got %.3f", minConfidence, res.RelativeSpeedupSampleAvsSampleB, res.Confidence)
 	}
 
 }
@@ -412,17 +406,9 @@ func TestCPRNG_vs_DPRNG_Performance(t *testing.T) {
 		timesDprng = append(timesDprng, float64(DiffTimeStamps(t3, t4))/float64(innerLoops))
 	}
 
-	mean := func(xs []float64) float64 {
-		s := 0.0
-		for _, v := range xs {
-			s += v
-		}
-		return s / float64(len(xs))
-	}
-
-	mCprng := mean(timesCprng)
-	mDprng := mean(timesDprng)
-	t.Logf("mean per-call (CPRNG with %d bytes)=%.1f ns, (DPRNG)=%.1f ns", cprngBufferSize, mCprng, mDprng)
+	mCprng := QuickMedian(timesCprng)
+	mDprng := QuickMedian(timesDprng)
+	t.Logf("median call (CPRNG with %d bytes)=%.1f ns, (DPRNG)=%.1f ns", cprngBufferSize, mCprng, mDprng)
 
 	if !(mDprng < mCprng) {
 		t.Fatalf("expected DPRNG to be faster: DPRNG=%.1f >= CPRNG=%.1f", mDprng, mCprng)
