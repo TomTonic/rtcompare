@@ -318,8 +318,8 @@ func TestCPRNG_Uint32N_Uniformity(t *testing.T) {
 func TestCPRNG_BufferSizePerformance(t *testing.T) {
 	const repeats = 71
 	const innerLoops = 300_000
-	const expectedSpeedup = 0.33333 // expect large-buffer CPRNG to be at least 33.333% faster than small-buffer CPRNG
-	const minConfidence = 0.95      // require at least 95% confidence
+	const expectedSpeedup = 0.32 // expect large-buffer CPRNG to be at least 32% faster than small-buffer CPRNG. This conservative estimate is required for GitHub Actions CI. On an M1 Pro MacBook the speedup is usually around 25x.
+	const minConfidence = 0.95   // require at least 95% confidence
 
 	small := NewCPRNG(16)
 	large := NewCPRNG(8192)
