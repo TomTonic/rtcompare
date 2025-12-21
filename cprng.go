@@ -22,7 +22,7 @@ type CPRNG struct {
 // A larger buffer reduces the number of operating system calls to crypto/rand.Reader,
 // improving performance. A smaller buffer reduces memory usage.
 // This random number generator is not deterministic in the sequence of numbers it generates.
-// This random number generator is not deterministic in its runtime (i.e., it does not have a constant runtime as it needs to periodically refill its buffer via to crypto/rand.Reader, an OS call).
+// This random number generator is not deterministic in its runtime (i.e., it does not have a constant runtime as it needs to periodically refill its buffer via crypto/rand.Reader, an OS call).
 // This random number generator is cryptographically secure (relying on crypto/rand, see https://pkg.go.dev/crypto/rand).
 // This random number generator is thread-safe as long as each goroutine uses its own instance.
 // This random number generator has a varying memory footprint (usually a few kilobytes).
