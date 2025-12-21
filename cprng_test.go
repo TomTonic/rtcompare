@@ -316,7 +316,7 @@ func TestCPRNG_Uint32N_Uniformity(t *testing.T) {
 // average time per Uint64 call across multiple samples and asserts that the
 // large-buffer CPRNG is faster on average than the small-buffer CPRNG.
 func TestCPRNG_BufferSizePerformance(t *testing.T) {
-	const repeats = 29
+	const repeats = 79
 	const innerLoops = 300_000
 
 	small := NewCPRNG(16)
