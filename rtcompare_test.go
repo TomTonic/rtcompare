@@ -461,3 +461,168 @@ func TestBootstrapConfidence_HighRelativeGains_DeterministicIdenticalSamples(t *
 	}
 
 }
+
+func TestF2T(t *testing.T) {
+	tests := []struct {
+		name         string
+		timesFaster  float64
+		expected     float64
+		expectNaN    bool
+		description  string
+	}{
+		{
+			name:        "zero input",
+			timesFaster: 0,
+			expectNaN:   true,
+			description: "timesFaster=0 should return NaN",
+		},
+		{
+			name:        "negative input",
+			timesFaster: -1.0,
+			expectNaN:   true,
+			description: "negative timesFaster should return NaN",
+		},
+		{
+			name:        "NaN input",
+			timesFaster: math.NaN(),
+			expectNaN:   true,
+			description: "NaN input should return NaN",
+		},
+		{
+			name:        "positive infinity",
+			timesFaster: math.Inf(1),
+			expected:    1.0,
+			expectNaN:   false,
+			description: "+Inf should return 1.0 (1 - 1/+Inf = 1 - 0 = 1)",
+		},
+		{
+			name:        "negative infinity",
+			timesFaster: math.Inf(-1),
+			expectNaN:   true,
+			description: "-Inf should return NaN (negative value)",
+		},
+		{
+			name:        "one times faster",
+			timesFaster: 1.0,
+			expected:    0.0,
+			expectNaN:   false,
+			description: "1x faster should return 0.0 (no speedup)",
+		},
+		{
+			name:        "two times faster",
+			timesFaster: 2.0,
+			expected:    0.5,
+			expectNaN:   false,
+			description: "2x faster should return 0.5 (50% reduction)",
+		},
+		{
+			name:        "three times faster",
+			timesFaster: 3.0,
+			expected:    1.0 - 1.0/3.0,
+			expectNaN:   false,
+			description: "3x faster should return ~0.6667",
+		},
+		{
+			name:        "four times faster",
+			timesFaster: 4.0,
+			expected:    0.75,
+			expectNaN:   false,
+			description: "4x faster should return 0.75 (75% reduction)",
+		},
+		{
+			name:        "ten times faster",
+			timesFaster: 10.0,
+			expected:    0.9,
+			expectNaN:   false,
+			description: "10x faster should return 0.9 (90% reduction)",
+		},
+		{
+			name:        "very large value",
+			timesFaster: 1e10,
+			expected:    1.0 - 1.0/1e10,
+			expectNaN:   false,
+			description: "very large multiplier should approach 1.0",
+		},
+		{
+			name:        "small positive value",
+			timesFaster: 0.5,
+			expected:    -1.0,
+			expectNaN:   false,
+			description: "0.5x faster (slower) should return -1.0 (negative threshold for slowdown)",
+		},
+		{
+			name:        "just above zero",
+			timesFaster: 1e-10,
+			expected:    1.0 - 1.0/1e-10,
+			expectNaN:   false,
+			description: "very small positive value should return large negative number",
+		},
+		{
+			name:        "1.5 times faster",
+			timesFaster: 1.5,
+			expected:    1.0 - 1.0/1.5,
+			expectNaN:   false,
+			description: "1.5x faster should return ~0.3333",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := F2T(tc.timesFaster)
+			
+			if tc.expectNaN {
+				if !math.IsNaN(result) {
+					t.Errorf("%s: expected NaN, got %v", tc.description, result)
+				}
+			} else {
+				if math.IsNaN(result) {
+					t.Errorf("%s: expected %v, got NaN", tc.description, tc.expected)
+				} else if math.Abs(result-tc.expected) > 1e-10 {
+					t.Errorf("%s: expected %v, got %v", tc.description, tc.expected, result)
+				}
+			}
+		})
+	}
+}
+
+func TestF2TEdgeCases(t *testing.T) {
+	// Test that F2T is consistent with the formula: threshold = 1 - 1/timesFaster
+	// For timesFaster > 1, the threshold should be positive and < 1
+	// For timesFaster = 1, threshold should be 0
+	// For timesFaster < 1 (but > 0), this would be a slowdown, should return NaN
+	
+	t.Run("boundary at 1", func(t *testing.T) {
+		result := F2T(1.0)
+		if result != 0.0 {
+			t.Errorf("F2T(1.0) should be exactly 0.0, got %v", result)
+		}
+	})
+	
+	t.Run("just below 1", func(t *testing.T) {
+		result := F2T(0.9999)
+		expected := 1.0 - 1.0/0.9999
+		if math.Abs(result-expected) > 1e-10 {
+			t.Errorf("F2T(0.9999) should be %v (negative threshold for slowdown), got %v", expected, result)
+		}
+	})
+	
+	t.Run("just above 1", func(t *testing.T) {
+		result := F2T(1.0001)
+		expected := 1.0 - 1.0/1.0001
+		if math.Abs(result-expected) > 1e-10 {
+			t.Errorf("F2T(1.0001) should be %v, got %v", expected, result)
+		}
+	})
+	
+	t.Run("mathematical consistency", func(t *testing.T) {
+		// Test that the formula is correct for various inputs
+		testValues := []float64{1.1, 1.25, 1.5, 2.0, 3.0, 5.0, 100.0, 1000.0}
+		for _, tf := range testValues {
+			result := F2T(tf)
+			expected := 1.0 - 1.0/tf
+			if math.Abs(result-expected) > 1e-10 {
+				t.Errorf("F2T(%v) = %v, expected %v", tf, result, expected)
+			}
+		}
+	})
+}
