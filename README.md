@@ -19,6 +19,7 @@ Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, 
 - Deterministic DPRNG for reproducible input generation.
 - Timing helpers (SampleTime, DiffTimeStamps) and small statistics utilities (mean, median, stddev).
 - Small, dependency-light API suitable for integration into CI and micro-benchmarks.
+- CPRNG — a new cryptographically secure PRNG backed by crypto/rand for scenarios that require cryptographic strength or unpredictable inputs (see API highlights).
 
 ## Install
 
@@ -80,7 +81,8 @@ func example() {
 ## Technical background
 
 - Bootstrap-based inference: Instead of reporting a single sample mean or relying on the `testing` harness, rtcompare collects timing samples across independent runs and uses bootstrap resampling to estimate the confidence that one implementation is faster than another by at least a given relative margin. This yields more informative, distribution-aware results (confidence intervals and probability estimates).
-- Deterministic input generation: DPRNG is provided to seed and generate reproducible inputs across runs, helping reduce input variance when comparing implementations.
+- Deterministic input generation: DPRNG is provided to seed and generate reproducible inputs across runs, helping reduce input variance when comparing implementations. For cases that require cryptographic strength or unpredictable inputs (for example, testing code that must handle cryptographic-quality randomness), rtcompare now provides CPRNG, a [crypto/rand](https://pkg.go.dev/crypto/rand)-backed PRNG. Use DPRNG when you need deterministic, repeatable, extremely fast inputs; use CPRNG when you need cryptographic unpredictability or higher entropy.
+
 - Noise reduction: The example shows how to warm up, use multiple inner iterations per timing sample to reduce quantization noise, and manually trigger GC cycles to reduce interference from allocations.
 
 ## When to use rtcompare instead of `testing.B`
@@ -96,6 +98,7 @@ The standard `testing` package is excellent for microbenchmarks and tight per-op
 ## API highlights
 
 - DPRNG — deterministic PRNG with Uint64 and Float64 helpers.
+- CPRNG — cryptographically secure PRNG backed by crypto/rand. Provides the same convenience helpers (Uint64, Float64) as DPRNG but yields cryptographic-strength randomness; not deterministic across runs.
 - SampleTime() / DiffTimeStamps() — helpers for high-resolution timing.
 - CompareSamples(timesA, timesB, speedups, resamples) — returns confidence estimates per requested relative speedup. Use `rtcompare.DefaultResamples` or the convenience wrapper `rtcompare.CompareSamplesDefault` for a sensible default.
 - QuickMedian — returns the median of a Float64 slice in expected O(n) time.
