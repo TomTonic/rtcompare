@@ -180,10 +180,10 @@ func TestCPRNG_Uint16_Uniformity(t *testing.T) {
 	}
 }
 
-// TestCPRNG_UniformFloat32_Uniformity samples 2^22 UniformFloat32 values and
+// TestCPRNG_Float32_Uniformity samples 2^22 Float32 values and
 // performs a chi-squared uniformity check across 65536 buckets. The test logs
 // chi2 and p-value and follows the same structure as TestCPRNG_Uint16_Uniformity.
-func TestCPRNG_UniformFloat32_Uniformity(t *testing.T) {
+func TestCPRNG_Float32_Uniformity(t *testing.T) {
 	const samples = 1 << 22
 	const bins = 65536
 	const alpha = 0.05
@@ -222,10 +222,10 @@ func TestCPRNG_UniformFloat32_Uniformity(t *testing.T) {
 	}
 }
 
-// TestCPRNG_UniformFloat64_Uniformity samples 2^22 UniformFloat64 values and
+// TestCPRNG_Float64_Uniformity samples 2^22 Float64 values and
 // performs a chi-squared uniformity check across 65536 buckets. The test logs
 // chi2 and p-value and follows the same structure as TestCPRNG_Uint16_Uniformity.
-func TestCPRNG_UniformFloat64_Uniformity(t *testing.T) {
+func TestCPRNG_Float64_Uniformity(t *testing.T) {
 	const samples = 1 << 22
 	const bins = 65536
 	const alpha = 0.05
@@ -233,7 +233,7 @@ func TestCPRNG_UniformFloat64_Uniformity(t *testing.T) {
 
 	counts := make([]int, bins)
 	for range samples {
-		v := c.Float32()
+		v := c.Float64()
 		if math.IsNaN(float64(v)) {
 			t.Fatalf("UniformFloat32 returned NaN")
 		}
@@ -243,7 +243,7 @@ func TestCPRNG_UniformFloat64_Uniformity(t *testing.T) {
 		if v < 0.0 || v >= 1.0 {
 			t.Fatalf("UniformFloat32 returned out-of-bounds value: %f", v)
 		}
-		idx := int(float32(bins) * v)
+		idx := int(float64(bins) * v)
 		if idx < 0 {
 			idx = 0
 		} else if idx >= bins {
