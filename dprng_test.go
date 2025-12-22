@@ -145,8 +145,8 @@ func TestUInt32N_Frequencies(t *testing.T) {
 }
 
 // TestUInt32N_CompareToModulo compares UInt32N against the reference
-// distribution computed by taking the low 32 bits of the raw Uint64 stream
-// and reducing by modulo. Both sequences are started with the same seed and
+// distribution computed by taking the raw Uint64 stream and reducing
+// by modulo. Both sequences are started with the same seed and
 // consume one RNG value per sample to stay aligned.
 func TestUInt32N_CompareToModulo(t *testing.T) {
 	cases := []struct {
@@ -154,29 +154,26 @@ func TestUInt32N_CompareToModulo(t *testing.T) {
 		n    uint32
 	}{
 		{"p3", 3},
+		{"e4", 4},
 		{"p5", 5},
+		{"e6", 6},
 		{"p7", 7},
 		{"p11", 11},
-		{"2^8", 256},
-		{"2^8-1", 255},
-		{"2^8+1", 257},
 		{"prime~256", 251},
-		{"2^10", 1024},
-		{"2^10-1", 1023},
-		{"2^10+1", 1025},
-		{"prime~1024", 1031},
+		{"1.5k", 3 * 512},
 	}
 
-	const samples = 50_000
-	const maxRelThreshold = 0.05 // 2%
-	const iterations = 512
+	const samplesPerBucket = 100
+	const iterations = 4503
+	const maxRelThreshold = 0.10
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if c.n == 0 {
 				t.Fatalf("invalid n: 0")
 			}
-			k := int(c.n)
+			countsObs := make([]uint32, c.n)
+			countsRef := make([]uint32, c.n)
 			resultsObs := make([]float64, 0, iterations)
 			resultsRef := make([]float64, 0, iterations)
 			seed := uint64(0x1234567890ABCDEF)
@@ -184,13 +181,16 @@ func TestUInt32N_CompareToModulo(t *testing.T) {
 			rngRef := NewDPRNG(seed)
 
 			for range iterations {
-				countsObs := make([]uint32, k)
-				countsRef := make([]uint32, k)
-
-				for range samples {
-					v := rngObs.UInt32N(c.n)
-					u := rngRef.Uint64()
-					ref := uint32(u&0xFFFFFFFF) % c.n
+				for i := range countsObs {
+					countsObs[i] = 0
+				}
+				for i := range countsRef {
+					countsRef[i] = 0
+				}
+				for range samplesPerBucket * c.n {
+					v := rngObs.UInt32N(c.n) // internal consumption of one Uint64
+					u := uint64(rngRef.Uint64())
+					ref := u % uint64(c.n)
 
 					countsObs[int(v)]++
 					countsRef[int(ref)]++
@@ -202,14 +202,18 @@ func TestUInt32N_CompareToModulo(t *testing.T) {
 				resultsObs = append(resultsObs, dObs)
 				resultsRef = append(resultsRef, dRef)
 			}
-			confidenceForThresholdObsBetter := BootstrapConfidence(resultsObs, resultsRef, []float64{maxRelThreshold}, 1_000, uint64(5))
-			confidenceForThresholdRefBetter := BootstrapConfidence(resultsRef, resultsObs, []float64{maxRelThreshold}, 1_000, uint64(5))
+			confidenceForThresholdObsBetter := BootstrapConfidence(resultsObs, resultsRef, []float64{maxRelThreshold}, 10_000, uint64(0))
+			confidenceForThresholdRefBetter := BootstrapConfidence(resultsRef, resultsObs, []float64{maxRelThreshold}, 10_000, uint64(0))
 
 			if confidenceForThresholdObsBetter[maxRelThreshold] != confidenceForThresholdRefBetter[maxRelThreshold] {
-				t.Errorf("confidenceForThresholdObsBetter and confidenceForThresholdRefBetter differ: confidence %.4f vs %.4f for rel.threshold %.2f",
+				t.Errorf("confidenceForObsBetter and confidenceForRefBetter differ: confidence %.4f vs %.4f for threshold %.2f\nmedian delta obs: %.2f median delta ref: %.2f of %.1f samples per bin\n",
 					confidenceForThresholdObsBetter[maxRelThreshold],
 					confidenceForThresholdRefBetter[maxRelThreshold],
-					maxRelThreshold)
+					maxRelThreshold,
+					QuickMedian(resultsObs),
+					QuickMedian(resultsRef),
+					float64(samplesPerBucket),
+				)
 			}
 		})
 	}

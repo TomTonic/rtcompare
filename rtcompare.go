@@ -6,9 +6,15 @@ import (
 	"slices"
 )
 
+// RTcomparisonResult holds the result of comparing two sets of runtime measurements.
+// For each requested relative speedup threshold it contains the estimated confidence
+// that the speedup of sample A over sample B meets or exceeds that threshold.
 type RTcomparisonResult struct {
+	// RelativeSpeedupSampleAvsSampleB is the relative speedup threshold that was evaluated.
 	RelativeSpeedupSampleAvsSampleB float64
-	Confidence                      float64
+	// Confidence is the estimated confidence (in [0,1]) that the relative speedup of sample A over sample B
+	// meets or exceeds RelativeSpeedupSampleAvsSampleB.
+	Confidence float64
 }
 
 const MinimumDataPoints uint64 = 11
@@ -115,19 +121,26 @@ func CompareRuntimes(measurementsA, measurementsB []float64, relativeGains []flo
 // len(xs) does not evenly divide the PRNG range. Also ensure xs is non-empty when
 // expecting sampled values, since index selection with len(xs)==0 would be invalid.
 //
-// This implementation uses a DPRNG from this package for reproducible sampling. Use 0 (zero)
-// as prngSeed for a random seed value, or provide a specific non-zero seed for
-// reproducible results across multiple calls.
+// This implementation uses a DPRNG from this package for reproducible sampling.
+// Provide a specific non-zero seed for reproducible results across multiple calls.
+// If prngSeed is zero, the function uses a CPRNG with cryptographic strength randomness.
 func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
-	rng := NewDPRNG(prngSeed)
 	n := len(xs)
 	sample := make([]float64, n)
 	if n == 0 {
 		return sample
 	}
-	for i := range n {
-		// sample[i] = xs[rng.Uint64()%uint64(n)]
-		sample[i] = xs[rng.UInt32N(uint32(n))]
+	if prngSeed != 0 {
+		rng := NewDPRNG(prngSeed)
+		for i := range n {
+			// sample[i] = xs[rng.Uint64()%uint64(n)]
+			sample[i] = xs[rng.UInt32N(uint32(n))]
+		}
+	} else {
+		rng := NewCPRNG(8192)
+		for i := range n {
+			sample[i] = xs[rng.Uint32N(uint32(n))]
+		}
 	}
 	return sample
 }
@@ -160,8 +173,8 @@ func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
 //   - A, B: observed samples (e.g. runtimes or throughputs) used as the population for bootstrap sampling.
 //   - relativeGains: slice of relative-speedup thresholds to evaluate (e.g. 0.05 for 5% faster).
 //   - resamples: number of bootstrap resamples to run (the greater the resamples, the lower the Monte Carlo sampling error).
-//   - prngSeed: DPRNG seed used for reproducible sampling. Use 0 to allow the function to initialize a
-//     non-deterministic seed, or provide a specific non-zero seed to reproduce results across runs.
+//   - prngSeed: DPRNG seed used for reproducible sampling. Provide a specific non-zero seed to reproduce results across runs.
+//     If prngSeed is zero, the function uses a CPRNG with cryptographic strength randomness.
 //
 // Note on choosing `resamples` (literature guidance): There is no one-size-fits-all value; common
 // recommendations in the bootstrap literature (Efron & Tibshirani; Davison & Hinkley) are to use at
@@ -190,8 +203,20 @@ func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 	counts := make(map[float64]uint32, len(relativeGains))
 
 	for i := uint64(0); i < resamples; i++ {
-		sampleA := bootstrapSample(A, prngSeed)
-		sampleB := bootstrapSample(B, prngSeed)
+		var seedA, seedB uint64
+		if prngSeed == 0 {
+			// Preserve any default/non-deterministic behavior of bootstrapSample when seed is zero.
+			seedA = 0
+			seedB = 0
+		} else {
+			// Derive iteration-specific, distinct seeds for A and B from the base seed.
+			iterSeed := prngSeed + i
+			seedA = iterSeed*2 + 1
+			seedB = iterSeed*2 + 2
+		}
+
+		sampleA := bootstrapSample(A, seedA)
+		sampleB := bootstrapSample(B, seedB)
 		medA := QuickMedian(sampleA)
 		medB := QuickMedian(sampleB)
 
@@ -225,4 +250,13 @@ func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 		confidenceForThreshold[threshold] = float64(counts[threshold]) / float64(resamples)
 	}
 	return confidenceForThreshold
+}
+
+// F2T (FactorToThreshold) converts a multiplicative speedup timesFaster (e.g. 3.0 => A is 3× faster)
+// to the internal relative‑reduction threshold used by CompareSamples and BootstrapConfidence.
+func F2T(timesFaster float64) float64 {
+	if timesFaster <= 0 || math.IsNaN(timesFaster) {
+		return math.NaN()
+	}
+	return 1.0 - 1.0/timesFaster
 }
