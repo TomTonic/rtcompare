@@ -4,11 +4,11 @@ import "math/rand"
 
 // DPRNG is a Deterministic Pseudo-Random Number Generator based on the xorshift* algorithm
 // (see https://en.wikipedia.org/wiki/Xorshift#xorshift*).
-// This randum number generator is deterministic in the sequence of numbers it generates. It has a period of 2^64-1,
+// This random number generator is by design deterministic in the sequence of numbers it generates. It has a period of 2^64-1,
 // i.e. every single number occurs every 2^64-1 calls and has the same successor and the same predecessor.
-// This randum number generator is deterministic its runtime (i.e. it has a constant runtime).
-// This randum number generator is not cryptographically secure.
-// This randum number generator is not thread-safe.
+// This random number generator is deterministic in its runtime (i.e., it has a constant runtime).
+// This random number generator is not cryptographically secure.
+// This random number generator is thread-safe as long as each goroutine uses its own instance.
 // This random number generator has a very small memory footprint (16 bytes).
 // The initial state must not be zero.
 type DPRNG struct {
@@ -16,7 +16,7 @@ type DPRNG struct {
 	Round uint64 // for debugging purposes
 }
 
-// NewDPRNG creates a new DPRNG instance.
+// NewDPRNG creates a new Deterministic Pseudo-Random Number Generator instance.
 // If no seed is provided, it initializes the state with a random non-zero value.
 // If the provided seed is zero, it initializes the state with a random non-zero value.
 // Otherwise, it uses the provided seed value.
