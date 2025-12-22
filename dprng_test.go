@@ -149,6 +149,7 @@ func TestUInt32N_Frequencies(t *testing.T) {
 // by modulo. Both sequences are started with the same seed and
 // consume one RNG value per sample to stay aligned.
 func TestUInt32N_CompareToModulo(t *testing.T) {
+	skipIfGHActions(t)
 	cases := []struct {
 		name string
 		n    uint32

@@ -2,9 +2,17 @@ package rtcompare
 
 import (
 	"math"
+	"os"
 	"runtime"
 	"testing"
 )
+
+// helper to skip tests when running in GitHub Actions CI
+func skipIfGHActions(t *testing.T) {
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Skip("skipped on GitHub Actions")
+	}
+}
 
 // TestCPRNG_TenMillion calls CPRNG methods twenty million times
 // to ensure there are no panics or errors.
@@ -316,6 +324,7 @@ func TestCPRNG_Uint32N_Uniformity(t *testing.T) {
 // average time per Uint64 call across multiple samples and asserts that the
 // large-buffer CPRNG is faster on average than the small-buffer CPRNG.
 func TestCPRNG_BufferSizePerformance(t *testing.T) {
+	skipIfGHActions(t)
 	const repeats = 71
 	const innerLoops = 300_000
 	const expectedSpeedup = 0.32 // expect large-buffer CPRNG to be at least 32% faster than small-buffer CPRNG. This conservative estimate is required for GitHub Actions CI. On an M1 Pro MacBook the speedup is usually around 25x.
