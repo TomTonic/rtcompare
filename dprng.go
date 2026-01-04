@@ -12,7 +12,7 @@ import (
 // This random number generator is deterministic in its runtime (i.e., it has a constant runtime).
 // This random number generator is not cryptographically secure.
 // This random number generator is thread-safe as long as each goroutine uses its own instance.
-// This random number generator has a very small memory footprint (16 bytes).
+// This random number generator has a very small memory footprint (24 bytes).
 // The initial state must not be zero.
 type DPRNG struct {
 	State     uint64
