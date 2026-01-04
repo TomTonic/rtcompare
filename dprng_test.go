@@ -3,6 +3,7 @@ package rtcompare
 import (
 	"fmt"
 	"math"
+	"math/bits"
 	"testing"
 
 	set3 "github.com/TomTonic/Set3"
@@ -229,20 +230,18 @@ func TestUInt32N_CompareToModulo(t *testing.T) {
 	}
 }
 
-func TestGenerateScrambler_Deterministic(t *testing.T) {
-	a := GenerateScrambler(42)
-	b := GenerateScrambler(42)
-	assert.Equal(t, a, b, "GenerateScrambler should be deterministic for the same iteration")
-}
-
-func TestGenerateScrambler_UniqueSmallRange(t *testing.T) {
-	seen := make(map[uint64]bool, 1024)
-	for i := range uint64(1000) {
-		s := GenerateScrambler(i)
-		if seen[s] {
-			t.Fatalf("duplicate scrambler generated for iteration %d", i)
+// Ensure 2^16 generated scrambler values are odd and
+// have at least 28 bits set (good bit density for a scrambler).
+func TestGenerateScrambler_OddAndBitcount(t *testing.T) {
+	const N = 1 << 16
+	for i := 0; i < N; i++ {
+		s := GenerateScrambler()
+		if s&1 == 0 {
+			t.Fatalf("GenerateScrambler(%d) returned even value: %d", i, s)
 		}
-		seen[s] = true
+		if bits.OnesCount64(s) < 28 {
+			t.Fatalf("GenerateScrambler(%d) has low bitcount (%d) for value %x", i, bits.OnesCount64(s), s)
+		}
 	}
 }
 
@@ -280,7 +279,7 @@ func TestNewDPRNG_ScramblerOddEnforced(t *testing.T) {
 
 func TestNewDPRNG_SameScramblerSameSequence(t *testing.T) {
 	seed := uint64(0xCAFEBABEDEADBEEF)
-	scr := GenerateScrambler(7)
+	scr := GenerateScrambler()
 	a := NewDPRNG(seed, scr)
 	b := NewDPRNG(seed, scr)
 	for i := 0; i < 10000; i++ {
