@@ -52,16 +52,30 @@ func NewDPRNG(seed ...uint64) DPRNG {
 	return result
 }
 
-// GenerateScrambler generates good quality scrambler constants for the DPRNG. The number of iterations
-// does not influence the quality of the scrambler constant, but each iteration generates a different
-// scrambler constants in a deterministic way. You can use the returned scrambler constant when creating
-// a new DPRNG instance to get a different permutation (i.e., sequence) of generated numbers.
-func GenerateScrambler(iterations uint64) uint64 {
-	s := goldenRatio64
-	for range iterations {
-		s += goldenRatio64
+// GenerateScrambler generates reasonable scrambler constants for the DPRNG.
+// The generated scrambler constant is always an odd number with a good bit density.
+// This ensures maximal period and good mixing properties.
+// You can use the returned scrambler constant when creating a new DPRNG
+// instance to get a different permutation (i.e., sequence) of generated numbers.
+func GenerateScrambler() uint64 {
+	cprng := NewCPRNG(256)
+	for {
+		candidate := cprng.Uint64() | 1 // ensure scrambler is odd
+		if bits.OnesCount64(candidate) < 28 {
+			continue
+		}
+		if bits.OnesCount64(candidate) > 36 {
+			continue
+		}
+		upperHalf := candidate >> 32
+		if bits.OnesCount64(upperHalf) < 13 {
+			continue
+		}
+		if bits.OnesCount64(upperHalf) > 19 {
+			continue
+		}
+		return candidate
 	}
-	return s
 }
 
 // This function returns the next pseudo-random number in the sequence.
