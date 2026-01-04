@@ -20,8 +20,7 @@ type DPRNG struct {
 	Round     uint64 // for debugging purposes
 }
 
-const goldenRatio64 = uint64(0x9E3779B97F4A7C15) // (sqrt(5)-1)/2 * 2^64
-const vigna = uint64(0x2545F4914F6CDD1D)         // Vigna's default scrambler constant optimized for our 12/25/27 xorshift
+const vigna = uint64(0x2545F4914F6CDD1D) // Vigna's default scrambler constant optimized for our 12/25/27 xorshift
 
 // NewDPRNG creates a new Deterministic Pseudo-Random Number Generator instance.
 // If no seed is provided, it initializes the state with a random non-zero value.
