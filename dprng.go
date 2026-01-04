@@ -35,12 +35,12 @@ const vigna = uint64(0x2545F4914F6CDD1D) // Vigna's default scrambler constant o
 func NewDPRNG(seed ...uint64) DPRNG {
 	result := DPRNG{}
 	if len(seed) == 0 {
-		result.State = uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1) // initialize with a random number != 0
+		result.State = uint64(rand.Uint64()&0xFFFFFFFFFFFFFFFE + 1) // initialize with a random number != 0
 		result.Scrambler = vigna
 	} else {
 		result.State = seed[0]
 		if result.State == 0 {
-			result.State = uint64(rand.Uint64()&0xFFFFFFFFFFFFFFE + 1) // initialize with a random number != 0
+			result.State = uint64(rand.Uint64()&0xFFFFFFFFFFFFFFFE + 1) // initialize with a random number != 0
 		}
 		if len(seed) > 1 {
 			result.Scrambler = seed[1] | 1 // ensure scrambler is odd
