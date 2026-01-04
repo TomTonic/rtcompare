@@ -9,25 +9,34 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewDPRNG_NoSeed_GeneratesNonZero(t *testing.T) {
+func TestNewDPRNG_NoSeed_GeneratesNonZeroAndVigna(t *testing.T) {
 	prng := NewDPRNG()
 	if prng.State == 0 {
 		t.Errorf("Expected non-zero state when no seed is provided, got 0")
 	}
+	if prng.Scrambler != vigna {
+		t.Errorf("Expected default scrambler to be Vigna's constant, got %d", prng.Scrambler)
+	}
 }
 
-func TestNewDPRNG_ZeroSeed_GeneratesNonZero(t *testing.T) {
+func TestNewDPRNG_ZeroSeed_GeneratesNonZeroAndVigna(t *testing.T) {
 	prng := NewDPRNG(0)
 	if prng.State == 0 {
 		t.Errorf("Expected non-zero state when seed is 0, got 0")
 	}
+	if prng.Scrambler != vigna {
+		t.Errorf("Expected default scrambler to be Vigna's constant, got %d", prng.Scrambler)
+	}
 }
 
-func TestNewDPRNG_WithValidSeed(t *testing.T) {
+func TestNewDPRNG_WithValidSeedAndVigna(t *testing.T) {
 	seed := uint64(42)
 	prng := NewDPRNG(seed)
 	if prng.State != seed {
 		t.Errorf("Expected state %d, got %d", seed, prng.State)
+	}
+	if prng.Scrambler != vigna {
+		t.Errorf("Expected default scrambler to be Vigna's constant, got %d", prng.Scrambler)
 	}
 }
 
@@ -166,7 +175,7 @@ func TestUInt32N_CompareToModulo(t *testing.T) {
 
 	const samplesPerBucket = 100
 	const iterations = 4503
-	const maxRelThreshold = 0.10
+	const maxRelThreshold = 0.07
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -217,6 +226,78 @@ func TestUInt32N_CompareToModulo(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestGenerateScrambler_Deterministic(t *testing.T) {
+	a := GenerateScrambler(42)
+	b := GenerateScrambler(42)
+	assert.Equal(t, a, b, "GenerateScrambler should be deterministic for the same iteration")
+}
+
+func TestGenerateScrambler_UniqueSmallRange(t *testing.T) {
+	seen := make(map[uint64]bool, 1024)
+	for i := range uint64(1000) {
+		s := GenerateScrambler(i)
+		if seen[s] {
+			t.Fatalf("duplicate scrambler generated for iteration %d", i)
+		}
+		seen[s] = true
+	}
+}
+
+// Tests for the new scrambler parameter to NewDPRNG
+func TestNewDPRNG_ScramblerProducesDifferentSequences(t *testing.T) {
+	seed := uint64(0x1234567890ABCDEF)
+	s1 := vigna
+	s2 := vigna ^ 0x1000 // different scrambler
+
+	p1 := NewDPRNG(seed, s1)
+	p2 := NewDPRNG(seed, s2)
+
+	equal := true
+	for i := 0; i < 1000; i++ {
+		if p1.Uint64() != p2.Uint64() {
+			equal = false
+			break
+		}
+	}
+	if equal {
+		t.Fatalf("expected different sequences for different scramblers")
+	}
+}
+
+func TestNewDPRNG_ScramblerOddEnforced(t *testing.T) {
+	even := uint64(0x1000) // even value
+	p := NewDPRNG(0x42, even)
+	if p.Scrambler&1 == 0 {
+		t.Fatalf("scrambler should be odd after enforcement, got %d", p.Scrambler)
+	}
+	if p.Scrambler != (even | 1) {
+		t.Fatalf("expected scrambler %d, got %d", even|1, p.Scrambler)
+	}
+}
+
+func TestNewDPRNG_SameScramblerSameSequence(t *testing.T) {
+	seed := uint64(0xCAFEBABEDEADBEEF)
+	scr := GenerateScrambler(7)
+	a := NewDPRNG(seed, scr)
+	b := NewDPRNG(seed, scr)
+	for i := 0; i < 10000; i++ {
+		if a.Uint64() != b.Uint64() {
+			t.Fatalf("sequences diverge at iteration %d", i)
+		}
+	}
+}
+
+func TestNewDPRNG_DefaultScramblerMatchesVigna(t *testing.T) {
+	seed := uint64(0x55)
+	d := NewDPRNG(seed)
+	v := NewDPRNG(seed, vigna)
+	for i := 0; i < 1000; i++ {
+		if d.Uint64() != v.Uint64() {
+			t.Fatalf("default scrambler does not match vigna at iteration %d", i)
+		}
 	}
 }
 
