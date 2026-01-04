@@ -107,6 +107,6 @@ func (thisState *DPRNG) UInt32N(n uint32) uint32 {
 	u64 := thisState.Uint64()
 	hi, _ := bits.Mul64(u64, uint64(n))
 	// we only need the high 64 bits, which is equivalent to (u64 * n) >> 64
-	// as n <= 2^32, hi is guaranteed to fit into 32 bits
+	// since n is a uint32 (at most 2^32 - 1), hi is at most 2^32 - 1 and fits in 32 bits
 	return uint32(hi)
 }
