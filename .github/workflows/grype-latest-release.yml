@@ -138,12 +138,12 @@ jobs:
           medium=$(jq   '[.matches[].vulnerability.severity | select(.=="Medium")]   | length' grype.json)
           low=$(jq      '[.matches[].vulnerability.severity | select(.=="Low")]      | length' grype.json)
           negligible=$(jq '[.matches[].vulnerability.severity | select(.=="Negligible")] | length' grype.json)
-          echo "total=$total"           >> $GITHUB_OUTPUT
-          echo "critical=$critical"     >> $GITHUB_OUTPUT
-          echo "high=$high"             >> $GITHUB_OUTPUT
-          echo "medium=$medium"         >> $GITHUB_OUTPUT
-          echo "low=$low"               >> $GITHUB_OUTPUT
-          echo "negligible=$negligible" >> $GITHUB_OUTPUT
+          echo "total=$total"           >> "$GITHUB_OUTPUT"
+          echo "critical=$critical"     >> "$GITHUB_OUTPUT"
+          echo "high=$high"             >> "$GITHUB_OUTPUT"
+          echo "medium=$medium"         >> "$GITHUB_OUTPUT"
+          echo "low=$low"               >> "$GITHUB_OUTPUT"
+          echo "negligible=$negligible" >> "$GITHUB_OUTPUT"
 
       - name: Update README block
         run: |
