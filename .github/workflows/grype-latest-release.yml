@@ -15,7 +15,7 @@ permissions:
 env:
   REPO: TomTonic/rtcompare
   GRYPE_DB_CACHE_DIR: ~/.cache/grype
-  TZ: Europe/Berlin
+  TZ: UTC
 
 jobs:
   scan-latest-release:
