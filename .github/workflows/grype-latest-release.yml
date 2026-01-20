@@ -127,25 +127,17 @@ jobs:
         working-directory: _scan_src
         run: |
           set -euo pipefail
-          # Download all Go module dependencies so Grype can scan them
           go mod download
-          # Verify dependencies
           go mod verify
+          # Compile all packages in the module (not just the example) to ensure dependencies for the whole repo are resolved.
+          go test ./... -run TestNonexistent -count=0
 
-      - name: Build binary for comprehensive scanning
+      - name: Run Grype on Go module source tree (JSON)
         working-directory: _scan_src
         run: |
           set -euo pipefail
-          # Build the example binary to ensure all dependencies are resolved
-          go build -o rtcompare-example ./cmd/rtcompare-example
-          echo "Built binary: rtcompare-example"
-
-      - name: Run Grype on built binary (JSON)
-        working-directory: _scan_src
-        run: |
-          set -euo pipefail
-          # Scan the built binary which contains dependency information
-          if grype ./rtcompare-example -o json > ../grype.json; then
+          # Scan the module source tree (go.mod/go.sum + source), not a single binary.
+          if grype dir:. -o json > ../grype.json; then
             echo "Grype JSON scan completed successfully (no vulnerabilities found)."
           else
             status=$?
@@ -221,7 +213,7 @@ jobs:
 
           SCAN_TIME=$(date +"%Y-%m-%d %H:%M %Z")
 
-          LINE1="✔ Grype scan of release **${{ steps.rel.outputs.tag }}**"
+          LINE1="✔ Grype scan of Go module source (release **${{ steps.rel.outputs.tag }}**)"
           LINE2="   ├── Vulnerabilities: **${{ steps.counts.outputs.total }}** matches"
           LINE3="   ├── Severity: ${{ steps.counts.outputs.critical }} critical, ${{ steps.counts.outputs.high }} high, ${{ steps.counts.outputs.medium }} medium, ${{ steps.counts.outputs.low }} low, ${{ steps.counts.outputs.negligible }} negligible"
           LINE4="   ├── Tooling: Grype **${{ steps.meta.outputs.grype_version }}** (built ${{ steps.meta.outputs.grype_build_date }})"
