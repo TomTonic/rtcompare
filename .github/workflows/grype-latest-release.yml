@@ -13,7 +13,7 @@ permissions:
 
 env:
   REPO: TomTonic/rtcompare
-  GRYPE_DB_CACHE_DIR: ~/.cache/grype/db
+  GRYPE_DB_CACHE_DIR: ~/.cache/grype
   TZ: Europe/Berlin
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
       - name: Cache Grype DB
         uses: actions/cache@v4
         with:
-          path: ~/.cache/grype
+          path: ${{ env.GRYPE_DB_CACHE_DIR }}
           # Use a branch-independent cache key so schedule and workflow_dispatch runs share the Grype DB cache
           key: grype-db-${{ runner.os }}-v1
           restore-keys: |
