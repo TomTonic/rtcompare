@@ -70,11 +70,33 @@ jobs:
 
       - name: Run Grype (JSON)
         run: |
-          grype dir:_scan_src -o json > grype.json || true
+          set -euo pipefail
+          if grype dir:_scan_src -o json > grype.json; then
+            echo "Grype JSON scan completed successfully (no vulnerabilities found)."
+          else
+            status=$?
+            if [ "$status" -eq 1 ]; then
+              echo "Grype JSON scan completed with vulnerabilities found (exit code 1), continuing workflow."
+            else
+              echo "Grype JSON scan failed with exit code $status" >&2
+              exit "$status"
+            fi
+          fi
 
       - name: Run Grype (SARIF)
         run: |
-          grype dir:_scan_src -o sarif > grype.sarif || true
+          set -euo pipefail
+          if grype dir:_scan_src -o sarif > grype.sarif; then
+            echo "Grype SARIF scan completed successfully (no vulnerabilities found)."
+          else
+            status=$?
+            if [ "$status" -eq 1 ]; then
+              echo "Grype SARIF scan completed with vulnerabilities found (exit code 1), continuing workflow."
+            else
+              echo "Grype SARIF scan failed with exit code $status" >&2
+              exit "$status"
+            fi
+          fi
 
       - name: Upload SARIF to GitHub Code Scanning (optional)
         if: always()
