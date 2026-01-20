@@ -57,6 +57,12 @@ jobs:
           echo "grype_version=$grype_version" >> "$GITHUB_OUTPUT"
           echo "grype_build_date=$grype_build_date" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: false  # We handle caching separately for Grype DB
+
       - name: Resolve latest release (REST) & download source tarball
         id: rel
         run: |
@@ -117,10 +123,29 @@ jobs:
           # Tarball/zipball download via API yields redirects to codeload  [2](https://docs.github.com/en/repositories/working-with-files/using-files/downloading-source-code-archives)[8](https://www.baeldung.com/linux/github-download-tarball)
           # curl -L follows redirects  [6](https://stackoverflow.com/questions/46060010/download-github-release-with-curl)
 
-      - name: Run Grype (JSON)
+      - name: Download Go module dependencies
+        working-directory: _scan_src
         run: |
           set -euo pipefail
-          if grype dir:_scan_src -o json > grype.json; then
+          # Download all Go module dependencies so Grype can scan them
+          go mod download
+          # Verify dependencies
+          go mod verify
+
+      - name: Build binary for comprehensive scanning
+        working-directory: _scan_src
+        run: |
+          set -euo pipefail
+          # Build the example binary to ensure all dependencies are resolved
+          go build -o rtcompare-example ./cmd/rtcompare-example
+          echo "Built binary: rtcompare-example"
+
+      - name: Run Grype on built binary (JSON)
+        working-directory: _scan_src
+        run: |
+          set -euo pipefail
+          # Scan the built binary which contains dependency information
+          if grype ./rtcompare-example -o json > ../grype.json; then
             echo "Grype JSON scan completed successfully (no vulnerabilities found)."
           else
             status=$?
