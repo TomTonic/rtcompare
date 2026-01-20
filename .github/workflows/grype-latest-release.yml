@@ -145,9 +145,9 @@ jobs:
             exit 1
           fi
           
-          # Validate grype.json has expected structure
-          if ! jq -e '.matches' grype.json >/dev/null 2>&1; then
-            echo "ERROR: grype.json does not have expected 'matches' field" >&2
+          # Validate grype.json has expected structure (matches field is an array)
+          if ! jq -e '.matches | type == "array"' grype.json >/dev/null 2>/dev/null; then
+            echo "ERROR: grype.json does not have expected 'matches' array field" >&2
             exit 1
           fi
           
