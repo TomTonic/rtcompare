@@ -106,7 +106,7 @@ jobs:
           START="<!-- vuln-scan:start -->"
           END="<!-- vuln-scan:end -->"
 
-          LINE1="✔ Scanned latest release **${{ steps.rel.outputs.tag }}**     [${{ steps.counts.outputs.total }} vulnerability matches]"
+          LINE1="✔ Scanned latest release **${{ steps.rel.outputs.tag }}** [${{ steps.counts.outputs.total }} vulnerability matches]"
           LINE2="   ├── by severity: ${{ steps.counts.outputs.critical }} critical, ${{ steps.counts.outputs.high }} high, ${{ steps.counts.outputs.medium }} medium, ${{ steps.counts.outputs.low }} low, ${{ steps.counts.outputs.negligible }} negligible"
           LINE3="_Source: ${{ steps.rel.outputs.html_url }}_"
           LINE4="_Last updated: $(date +\"%Y-%m-%d %H:%M %Z\")_"
