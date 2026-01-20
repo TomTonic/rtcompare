@@ -132,6 +132,25 @@ jobs:
         id: counts
         run: |
           set -euo pipefail
+          
+          # Validate grype.json exists
+          if [ ! -f grype.json ]; then
+            echo "ERROR: grype.json file not found" >&2
+            exit 1
+          fi
+          
+          # Validate grype.json is valid JSON
+          if ! jq empty grype.json 2>/dev/null; then
+            echo "ERROR: grype.json is not valid JSON" >&2
+            exit 1
+          fi
+          
+          # Validate grype.json has expected structure
+          if ! jq -e '.matches' grype.json >/dev/null 2>&1; then
+            echo "ERROR: grype.json does not have expected 'matches' field" >&2
+            exit 1
+          fi
+          
           total=$(jq '.matches | length' grype.json)
           critical=$(jq '[.matches[].vulnerability.severity | select(.=="Critical")] | length' grype.json)
           high=$(jq     '[.matches[].vulnerability.severity | select(.=="High")]     | length' grype.json)
