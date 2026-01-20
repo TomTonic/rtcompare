@@ -108,10 +108,20 @@ jobs:
           # Verify dependencies
           go mod verify
 
-      - name: Run Grype (JSON)
+      - name: Build binary for comprehensive scanning
+        working-directory: _scan_src
         run: |
           set -euo pipefail
-          if grype dir:_scan_src -o json > grype.json; then
+          # Build the example binary to ensure all dependencies are resolved
+          go build -o rtcompare-example ./cmd/rtcompare-example
+          echo "Built binary: rtcompare-example"
+
+      - name: Run Grype on built binary (JSON)
+        working-directory: _scan_src
+        run: |
+          set -euo pipefail
+          # Scan the built binary which contains dependency information
+          if grype ./rtcompare-example -o json > ../grype.json; then
             echo "Grype JSON scan completed successfully (no vulnerabilities found)."
           else
             status=$?
