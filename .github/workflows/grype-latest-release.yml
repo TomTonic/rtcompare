@@ -3,12 +3,12 @@ name: Grype Scan (latest release)
 
 on:
   schedule:
-    - cron: "17 5 * * *"   # täglich 05:17 UTC
+    - cron: "17 5 * * *"   # daily 05:17 UTC
   workflow_dispatch: {}
 
 permissions:
   contents: write           # README-Update + Commit
-  security-events: write    # für SARIF Upload (optional)
+  security-events: write    # for SARIF upload (optional)
   actions: read
 
 env:
@@ -21,9 +21,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout default branch (für README-Commit)
-        uses: actions/checkout@v4   # Standard-Branch bleibt Arbeitsverzeichnis
-        # Doku: actions/checkout Optionen & defaults  [7](https://github.com/actions/checkout)
+      - name: Checkout default branch (for README commit)
+        uses: actions/checkout@v4   # Default branch remains working directory
+        # Doc: actions/checkout options & defaults  [7](https://github.com/actions/checkout)
 
       - name: Cache Grype DB
         uses: actions/cache@v4
@@ -36,15 +36,15 @@ jobs:
       - name: Install grype
         run: |
           curl -sSfL https://get.anchore.io/grype | sudo sh -s -- -b /usr/local/bin
-        # Offizielle Install-Variante  [3](https://oss.anchore.com/docs/installation/grype/)
+        # Official install variant  [3](https://oss.anchore.com/docs/installation/grype/)
 
       - name: Resolve latest release (REST) & download source tarball
         id: rel
         run: |
           set -euo pipefail
           API="https://api.github.com/repos/${REPO}/releases/latest"
-          # GitHub REST: /releases/latest  (Version-Header empfohlen)
-          #  -> liefert u.a. tag_name, html_url, tarball_url  [1](https://docs.github.com/en/rest/releases)
+          # GitHub REST: /releases/latest  (version header recommended)
+          #  -> provides, among others, tag_name, html_url, tarball_url  [1](https://docs.github.com/en/rest/releases)
           json=$(curl -sSL -H "Accept: application/vnd.github+json" \
                           -H "X-GitHub-Api-Version: 2022-11-28" "$API")
           tag=$(jq -r '.tag_name' <<<"$json")
@@ -52,7 +52,7 @@ jobs:
           tarball_url=$(jq -r '.tarball_url' <<<"$json")
 
           if [ -z "${tag}" ] || [ "${tag}" = "null" ]; then
-            echo "Kein Release gefunden (404?)." >&2
+            echo "No release found (404?)." >&2
             exit 1
           fi
 
@@ -60,12 +60,12 @@ jobs:
           echo "html_url=$html_url" >> "$GITHUB_OUTPUT"
           echo "tarball_url=$tarball_url" >> "$GITHUB_OUTPUT"
 
-          # Download + Entpacken des Release-Source-Archivs
+          # Download + extract the release source archive
           mkdir -p _scan_src
           curl -sSL -H "Accept: application/vnd.github+json" "$tarball_url" \
             | tar -xz -C _scan_src --strip-components=1
-          # Tarball/Zipball-Download via API liefert Redirects auf codeload  [2](https://docs.github.com/en/repositories/working-with-files/using-files/downloading-source-code-archives)[8](https://www.baeldung.com/linux/github-download-tarball)
-          # curl -L folgt Redirects  [6](https://stackoverflow.com/questions/46060010/download-github-release-with-curl)
+          # Tarball/zipball download via API yields redirects to codeload  [2](https://docs.github.com/en/repositories/working-with-files/using-files/downloading-source-code-archives)[8](https://www.baeldung.com/linux/github-download-tarball)
+          # curl -L follows redirects  [6](https://stackoverflow.com/questions/46060010/download-github-release-with-curl)
 
       - name: Run Grype (JSON)
         run: |
@@ -80,7 +80,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: grype.sarif
-        # SARIF Upload Doku  [4](https://docs.github.com/en/code-security/how-tos/scan-code-for-vulnerabilities/integrate-with-existing-tools/uploading-a-sarif-file-to-github)
+        # SARIF upload doc  [4](https://docs.github.com/en/code-security/how-tos/scan-code-for-vulnerabilities/integrate-with-existing-tools/uploading-a-sarif-file-to-github)
 
       - name: Extract severity counts
         id: counts
