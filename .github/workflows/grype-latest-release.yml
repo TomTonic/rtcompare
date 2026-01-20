@@ -70,8 +70,32 @@ jobs:
             API="https://api.github.com/repos/${REPO}/releases/latest"
             # GitHub REST: /releases/latest  (version header recommended)
             #  -> provides, among others, tag_name, html_url, tarball_url  [1](https://docs.github.com/en/rest/releases)
-            json=$(curl -sSL -H "Accept: application/vnd.github+json" \
+            
+            # Capture both HTTP status code and response body
+            response=$(curl -sSL -w "\n%{http_code}" \
+                            -H "Accept: application/vnd.github+json" \
                             -H "X-GitHub-Api-Version: 2022-11-28" "$API")
+            
+            # Extract status code (last line) and body (everything else)
+            http_code=$(echo "$response" | tail -n1)
+            json=$(echo "$response" | sed '$d')
+            
+            # Check HTTP status code
+            if [ "$http_code" != "200" ]; then
+              echo "Error: GitHub API returned HTTP $http_code for $API" >&2
+              if [ "$http_code" = "404" ]; then
+                echo "No releases found for repository ${REPO}. Please create a release first." >&2
+              fi
+              exit 1
+            fi
+            
+            # Validate JSON response before parsing
+            if ! echo "$json" | jq empty 2>/dev/null; then
+              echo "Error: Invalid JSON response from GitHub API" >&2
+              echo "Response: $json" >&2
+              exit 1
+            fi
+            
             tag=$(jq -r '.tag_name' <<<"$json")
             html_url=$(jq -r '.html_url' <<<"$json")
             tarball_url=$(jq -r '.tarball_url' <<<"$json")
