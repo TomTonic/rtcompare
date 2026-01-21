@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: write           # README-Update + Commit
-  actions: read
 
 env:
   REPO: TomTonic/rtcompare
@@ -108,7 +107,7 @@ jobs:
           fi
 
           if [ -z "${tag}" ] || [ "${tag}" = "null" ]; then
-            echo "No release found (404?)." >&2
+            echo "Error: No release tag found in API response or event payload." >&2
             exit 1
           fi
 
@@ -130,7 +129,7 @@ jobs:
           go mod download
           go mod verify
           # Compile all packages in the module (not just the example) to ensure dependencies for the whole repo are resolved.
-          go test ./... -run TestNonexistent -count=0
+          go build ./...
 
       - name: Run Grype on Go module source tree (JSON)
         working-directory: _scan_src
@@ -224,12 +223,28 @@ jobs:
           NEW_BLOCK="${START}\n${LINE1}\n${LINE2}\n${LINE3}\n${LINE4}\n${LINE5}\n${LINE6}\n${LINE7}\n${END}"
 
           awk -v start="$START" -v end="$END" -v repl="$NEW_BLOCK" '
-            BEGIN{found=0}
-            { if ($0==start){print repl; inblock=1; found=1}
-              else if ($0==end){inblock=0}
-              else if (!inblock){print}
+            BEGIN{found=0; inblock=0}
+            {
+              line = $0
+              # Trim leading and trailing spaces/tabs before comparing to markers
+              gsub(/^[ \t]+|[ \t]+$/, "", line)
+
+              if (line == start) {
+                print repl
+                inblock = 1
+                found = 1
+              } else if (line == end) {
+                inblock = 0
+              } else if (!inblock) {
+                print $0
+              }
             }
-            END{ if (found==0){ print "ERROR: markers not found" > "/dev/stderr"; exit 1 } }
+            END{
+              if (found==0){
+                print "ERROR: markers not found" > "/dev/stderr"
+                exit 1
+              }
+            }
           ' README.md > README.tmp && mv README.tmp README.md
 
       - name: Commit and push if changed
