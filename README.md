@@ -6,6 +6,10 @@
 [![Tests](https://github.com/TomTonic/rtcompare/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/TomTonic/rtcompare/actions/workflows/coverage.yml)
 ![coverage](https://raw.githubusercontent.com/TomTonic/rtcompare/badges/.badges/main/coverage.svg)
 
+<!-- vuln-scan:start -->
+*(will automatically be updated by CI daily)*
+<!-- vuln-scan:end -->
+
 ## Statistically significant runtime comparison for codepaths in golang
 
 rtcompare is a small, focused Go library for robust runtime or memory measurement comparisons and lightweight benchmarking. It provides utilities to collect timing samples, compare sample distributions using bootstrap techniques, and helper primitives (deterministic PRNG, sample timing helpers, small statistics utilities). The project is intended as a practical alternative to the standard `testing` benchmarking harness when you want reproducible, distribution-aware comparisons and confidence estimates for relative speedups.
