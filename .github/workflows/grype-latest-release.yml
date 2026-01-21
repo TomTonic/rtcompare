@@ -227,8 +227,7 @@ jobs:
             {
               line = $0
               # Trim leading and trailing spaces/tabs before comparing to markers
-              sub(/^[ \t]+/, "", line)
-              sub(/[ \t]+$/, "", line)
+              gsub(/^[ \t]+|[ \t]+$/, "", line)
 
               if (line == start) {
                 print repl
@@ -237,7 +236,7 @@ jobs:
               } else if (line == end) {
                 inblock = 0
               } else if (!inblock) {
-                print
+                print $0
               }
             }
             END{
