@@ -11,8 +11,8 @@
    ├── Vulnerabilities: **0** matches
    ├── Severity: 0 critical, 0 high, 0 medium, 0 low, 0 negligible
    ├── Tooling: Grype **0.105.0** (built 2026-01-15T22)
-   ├── DB: schema **v6.1.3**, built **2026-01-22T06**, status **valid**
-   └── Scan time: **2026-01-23 05:47 UTC**
+   ├── DB: schema **v6.1.3**, built **2026-01-23T06**, status **valid**
+   └── Scan time: **2026-01-24 05:40 UTC**
 _Source: https://github.com/TomTonic/rtcompare/releases/tag/v0.5.0_
 <!-- vuln-scan:end -->
 
