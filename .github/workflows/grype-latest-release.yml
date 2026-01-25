@@ -224,7 +224,7 @@ jobs:
           GRYPE_URL="https://github.com/anchore/grype/releases/tag/${GRYPE_VERSION_TAG}"
 
           # A small, stable-ish Grype logo (from upstream README).
-          GRYPE_LOGO_HTML='<img src="https://user-images.githubusercontent.com/5199289/136855393-d0a9eef9-ccf1-4e2b-9d7c-7aad16a567e5.png" width="16" height="16" alt="grype" />'
+          GRYPE_LOGO_HTML='<img src="https://user-images.githubusercontent.com/5199289/136855393-d0a9eef9-ccf1-4e2b-9d7c-7aad16a567e5.png" width="16" height="24" alt="grype logo" />'
 
           LINE1="${GRYPE_LOGO_HTML} **grype** security scan of Go module [rtcompare ${RELEASE_TAG}](${RELEASE_URL}): **${{ steps.counts.outputs.total }} Vulnerabilities** (${{ steps.counts.outputs.critical }} critical, ${{ steps.counts.outputs.high }} high, ${{ steps.counts.outputs.medium }} medium, ${{ steps.counts.outputs.low }} low severity). Used [grype version ${GRYPE_VERSION}](${GRYPE_URL}) with DB schema ${{ steps.db.outputs.db_schema }}, built ${{ steps.db.outputs.db_built }}."
 
