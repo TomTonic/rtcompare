@@ -5,7 +5,7 @@
 ![coverage](https://raw.githubusercontent.com/TomTonic/rtcompare/badges/.badges/main/coverage.svg)
 
 <!-- vuln-scan:start -->
-<img src="https://user-images.githubusercontent.com/5199289/136855393-d0a9eef9-ccf1-4e2b-9d7c-7aad16a567e5.png" width="16" height="24" alt="grype logo" /> **grype** security scan of Go module [rtcompare v0.5.0](https://github.com/TomTonic/rtcompare/releases/tag/v0.5.0): **0 Vulnerabilities** (0 critical, 0 high, 0 medium, 0 low severity). Used [grype version 0.105.0](https://github.com/anchore/grype/releases/tag/v0.105.0) with DB schema v6.1.3, built 2026-01-25T06:15:59Z.
+Supply chain vulnerability scan of Go module [rtcompare v0.5.0](https://github.com/TomTonic/rtcompare/releases/tag/v0.5.0): **0 CVE's** (0 critical, 0 high, 0 medium, 0 low severity). Used [grype version 0.105.0](https://github.com/anchore/grype/releases/tag/v0.105.0) with DB schema v6.1.3, built 2026-01-25T06:15:59Z.
 <!-- vuln-scan:end -->
 
 # rtcompare
