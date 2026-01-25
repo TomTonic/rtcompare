@@ -47,8 +47,9 @@ jobs:
           ver_out=$(grype version)
           echo "$ver_out"
 
-          grype_version=$(awk -F': *' '/^Version:/ {print $2; exit}' <<<"$ver_out")
-          grype_build_date=$(awk -F': *' '/^BuildDate:/ {print $2; exit}' <<<"$ver_out")
+          # NOTE: Don't split on ':' because timestamps contain ':' too.
+          grype_version=$(sed -nE 's/^Version:[[:space:]]*//p' <<<"$ver_out" | head -n1)
+          grype_build_date=$(sed -nE 's/^BuildDate:[[:space:]]*//p' <<<"$ver_out" | head -n1)
 
           grype_version=${grype_version:-unknown}
           grype_build_date=${grype_build_date:-unknown}
@@ -156,9 +157,10 @@ jobs:
           db_out=$(grype db status)
           echo "$db_out"
 
-          db_schema=$(awk -F': *' '/^Schema:/ {print $2; exit}' <<<"$db_out")
-          db_built=$(awk -F': *' '/^Built:/ {print $2; exit}' <<<"$db_out")
-          db_status=$(awk -F': *' '/^Status:/ {print $2; exit}' <<<"$db_out")
+          # NOTE: Don't split on ':' because timestamps contain ':' too.
+          db_schema=$(sed -nE 's/^Schema:[[:space:]]*//p' <<<"$db_out" | head -n1)
+          db_built=$(sed -nE 's/^Built:[[:space:]]*//p' <<<"$db_out" | head -n1)
+          db_status=$(sed -nE 's/^Status:[[:space:]]*//p' <<<"$db_out" | head -n1)
 
           db_schema=${db_schema:-unknown}
           db_built=${db_built:-unknown}
@@ -210,17 +212,23 @@ jobs:
           START="<!-- vuln-scan:start -->"
           END="<!-- vuln-scan:end -->"
 
-          SCAN_TIME=$(date +"%Y-%m-%d %H:%M %Z")
+          RELEASE_TAG="${{ steps.rel.outputs.tag }}"
+          RELEASE_URL="${{ steps.rel.outputs.html_url }}"
 
-          LINE1="✔ Grype scan of Go module source (release **${{ steps.rel.outputs.tag }}**)"
-          LINE2="   ├── Vulnerabilities: **${{ steps.counts.outputs.total }}** matches"
-          LINE3="   ├── Severity: ${{ steps.counts.outputs.critical }} critical, ${{ steps.counts.outputs.high }} high, ${{ steps.counts.outputs.medium }} medium, ${{ steps.counts.outputs.low }} low, ${{ steps.counts.outputs.negligible }} negligible"
-          LINE4="   ├── Tooling: Grype **${{ steps.meta.outputs.grype_version }}** (built ${{ steps.meta.outputs.grype_build_date }})"
-          LINE5="   ├── DB: schema **${{ steps.db.outputs.db_schema }}**, built **${{ steps.db.outputs.db_built }}**, status **${{ steps.db.outputs.db_status }}**"
-          LINE6="   └── Scan time: **${SCAN_TIME}**"
-          LINE7="_Source: ${{ steps.rel.outputs.html_url }}_"
+          GRYPE_VERSION="${{ steps.meta.outputs.grype_version }}"
+          if [[ "$GRYPE_VERSION" == v* ]]; then
+            GRYPE_VERSION_TAG="$GRYPE_VERSION"
+          else
+            GRYPE_VERSION_TAG="v$GRYPE_VERSION"
+          fi
+          GRYPE_URL="https://github.com/anchore/grype/releases/tag/${GRYPE_VERSION_TAG}"
 
-          NEW_BLOCK="${START}\n${LINE1}\n${LINE2}\n${LINE3}\n${LINE4}\n${LINE5}\n${LINE6}\n${LINE7}\n${END}"
+          # A small, stable-ish Grype logo (from upstream README).
+          GRYPE_LOGO_HTML='<img src="https://user-images.githubusercontent.com/5199289/136855393-d0a9eef9-ccf1-4e2b-9d7c-7aad16a567e5.png" width="16" height="16" alt="grype" />'
+
+          LINE1="${GRYPE_LOGO_HTML} **grype** security scan of Go module [rtcompare ${RELEASE_TAG}](${RELEASE_URL}): **${{ steps.counts.outputs.total }} Vulnerabilities** (${{ steps.counts.outputs.critical }} critical, ${{ steps.counts.outputs.high }} high, ${{ steps.counts.outputs.medium }} medium, ${{ steps.counts.outputs.low }} low severity). Used [grype version ${GRYPE_VERSION}](${GRYPE_URL}) with DB schema ${{ steps.db.outputs.db_schema }}, built ${{ steps.db.outputs.db_built }}."
+
+          NEW_BLOCK="${START}\n${LINE1}\n${END}"
 
           awk -v start="$START" -v end="$END" -v repl="$NEW_BLOCK" '
             BEGIN{found=0; inblock=0}
@@ -255,6 +263,6 @@ jobs:
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add README.md
-            git commit -m "chore(security): grype scan for latest release ${{ steps.rel.outputs.tag }} [skip ci]"
+            git commit -m "Automated grype security scan for latest release ${{ steps.rel.outputs.tag }}"
             git push
           fi
