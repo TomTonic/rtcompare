@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Cache Grype DB
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.GRYPE_DB_CACHE_DIR }}
           # Use a branch-independent cache key so schedule and workflow_dispatch runs share the Grype DB cache
