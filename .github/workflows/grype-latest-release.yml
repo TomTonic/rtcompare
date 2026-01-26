@@ -3,7 +3,7 @@ name: Grype Scan (latest release)
 
 on:
   schedule:
-    - cron: "17 5 * * *"   # daily 05:17 UTC
+    - cron: "53 6 * * *"   # daily 06:53 UTC - after Grype DB update (approx 06:15 UTC)
   release:
     types: [published]
   workflow_dispatch: {}
@@ -21,9 +21,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+  
       - name: Checkout default branch (for README commit)
-        uses: actions/checkout@v4   # Default branch remains working directory
-        # Doc: actions/checkout options & defaults  [7](https://github.com/actions/checkout)
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Cache Grype DB
         uses: actions/cache@v4
@@ -37,7 +41,7 @@ jobs:
       - name: Install grype
         run: |
           curl -sSfL https://get.anchore.io/grype | sudo sh -s -- -b /usr/local/bin
-        # Official install variant  [3](https://oss.anchore.com/docs/installation/grype/)
+        # Official install variant (https://oss.anchore.com/docs/installation/grype/)
 
       - name: Capture Grype metadata
         id: meta
@@ -58,10 +62,9 @@ jobs:
           echo "grype_build_date=$grype_build_date" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           go-version-file: 'go.mod'
-          cache: false  # We handle caching separately for Grype DB
 
       - name: Resolve latest release (REST) & download source tarball
         id: rel
@@ -226,7 +229,7 @@ jobs:
           # A small, stable-ish Grype logo (from upstream README).
           GRYPE_LOGO_HTML='<img src="https://user-images.githubusercontent.com/5199289/136855393-d0a9eef9-ccf1-4e2b-9d7c-7aad16a567e5.png" width="16" height="24" alt="grype logo" />'
 
-          LINE1="Supply chain vulnerability scan of Go module [rtcompare ${RELEASE_TAG}](${RELEASE_URL}): **${{ steps.counts.outputs.total }} CVE's** (${{ steps.counts.outputs.critical }} critical, ${{ steps.counts.outputs.high }} high, ${{ steps.counts.outputs.medium }} medium, ${{ steps.counts.outputs.low }} low severity). Used [grype version ${GRYPE_VERSION}](${GRYPE_URL}) with DB schema ${{ steps.db.outputs.db_schema }}, built ${{ steps.db.outputs.db_built }}."
+          LINE1="Daily supply chain vulnerability scan of [rtcompare ${RELEASE_TAG}](${RELEASE_URL}): **${{ steps.counts.outputs.total }} CVE's** (${{ steps.counts.outputs.critical }} critical, ${{ steps.counts.outputs.high }} high, ${{ steps.counts.outputs.medium }} medium, ${{ steps.counts.outputs.low }} low severity). Used [grype version ${GRYPE_VERSION}](${GRYPE_URL}) with DB schema ${{ steps.db.outputs.db_schema }}, built ${{ steps.db.outputs.db_built }}."
 
           NEW_BLOCK="${START}\n${LINE1}\n${END}"
 
