@@ -27,6 +27,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          # Ensure we can update/commit README on the default branch.
+          # (On release events, the default checkout ref can be the tag commit.)
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -35,6 +38,11 @@ jobs:
         uses: TomTonic/grype_me@v1.0.0
         with:
           scan: 'latest_release'
+
+      - name: Checkout default branch (restore README)
+        run: |
+          git fetch origin "${{ github.event.repository.default_branch }}" --depth=1
+          git checkout "${{ github.event.repository.default_branch }}"
 
       - name: Get latest release tag
         id: release
@@ -86,8 +94,9 @@ jobs:
             }
             END{
               if (found==0){
-                print "ERROR: markers not found" > "/dev/stderr"
-                exit 1
+                print "WARN: markers not found; appending new block" > "/dev/stderr"
+                print ""
+                print repl
               }
             }
           ' README.md > README.tmp && mv README.tmp README.md
