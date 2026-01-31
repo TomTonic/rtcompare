@@ -24,7 +24,7 @@ jobs:
         with:
           egress-policy: audit
   
-      - name: Checkout default branch (for README commit)
+      - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
@@ -36,53 +36,15 @@ jobs:
         with:
           scan: 'latest_release'
 
-      - name: Resolve latest release info (REST)
-        id: rel
+      - name: Get latest release tag
+        id: release
         run: |
-          set -euo pipefail
-
-          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
-            tag=$(jq -r '.release.tag_name' "$GITHUB_EVENT_PATH")
-            html_url=$(jq -r '.release.html_url' "$GITHUB_EVENT_PATH")
-          else
-            API="https://api.github.com/repos/${REPO}/releases/latest"
-            
-            # Capture both HTTP status code and response body
-            response=$(curl -sSL -w "\n%{http_code}" \
-                            -H "Accept: application/vnd.github+json" \
-                            -H "X-GitHub-Api-Version: 2022-11-28" "$API")
-            
-            # Extract status code (last line) and body (everything else)
-            http_code=$(echo "$response" | tail -n1)
-            json=$(echo "$response" | sed '$d')
-            
-            # Check HTTP status code
-            if [ "$http_code" != "200" ]; then
-              echo "Error: GitHub API returned HTTP $http_code for $API" >&2
-              if [ "$http_code" = "404" ]; then
-                echo "No releases found for repository ${REPO}. Please create a release first." >&2
-              fi
-              exit 1
-            fi
-            
-            # Validate JSON response before parsing
-            if ! echo "$json" | jq empty 2>/dev/null; then
-              echo "Error: Invalid JSON response from GitHub API" >&2
-              echo "Response: $json" >&2
-              exit 1
-            fi
-            
-            tag=$(jq -r '.tag_name' <<<"$json")
-            html_url=$(jq -r '.html_url' <<<"$json")
-          fi
-
-          if [ -z "${tag}" ] || [ "${tag}" = "null" ]; then
-            echo "Error: No release tag found in API response or event payload." >&2
+          RELEASE_TAG=$(git tag --sort=-v:refname | head -n1)
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "Error: No release tags found in repository" >&2
             exit 1
           fi
-
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "html_url=$html_url" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Update README block
         run: |
@@ -90,8 +52,8 @@ jobs:
           START="<!-- grype-me-scan:start -->"
           END="<!-- grype-me-scan:end -->"
 
-          RELEASE_TAG="${{ steps.rel.outputs.tag }}"
-          RELEASE_URL="${{ steps.rel.outputs.html_url }}"
+          RELEASE_TAG="${{ steps.release.outputs.tag }}"
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/${RELEASE_TAG}"
 
           GRYPE_VERSION="${{ steps.grype-scan.outputs.grype-version }}"
           if [[ "$GRYPE_VERSION" == v* ]]; then
@@ -138,6 +100,6 @@ jobs:
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add README.md
-            git commit -m "Automated CVE scan of release ${{ steps.rel.outputs.tag }} (grype_me)"
+            git commit -m "Automated CVE scan of release ${{ steps.release.outputs.tag }} (grype_me)"
             git push
           fi
