@@ -3,7 +3,7 @@ name: Grype_Me Scan (latest release)
 
 on:
   schedule:
-    - cron: "53 6 * * *"   # daily 06:53 UTC - after Grype DB update (approx 06:15 UTC)
+    - cron: "53 7 * * *"   # daily 07:53 UTC - 1h after grype_me update (approx 06:56 UTC)
   release:
     types: [published]
   workflow_dispatch: {}
