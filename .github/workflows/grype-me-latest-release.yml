@@ -32,7 +32,7 @@ jobs:
 
       - name: Scan latest release for vulnerabilities
         id: grype-scan
-        uses: TomTonic/grype_me@v1
+        uses: TomTonic/grype_me@v1.0.0
         with:
           scan: 'latest_release'
 
