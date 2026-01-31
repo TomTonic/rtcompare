@@ -63,7 +63,7 @@ jobs:
           fi
           GRYPE_URL="https://github.com/anchore/grype/releases/tag/${GRYPE_VERSION_TAG}"
 
-          LINE1="Daily supply chain vulnerability scan of [rtcompare ${RELEASE_TAG}](${RELEASE_URL}): **${{ steps.grype-scan.outputs.cve-count }} CVE's** (${{ steps.grype-scan.outputs.critical }} critical, ${{ steps.grype-scan.outputs.high }} high, ${{ steps.grype-scan.outputs.medium }} medium, ${{ steps.grype-scan.outputs.low }} low severity). Used [grype version ${GRYPE_VERSION}](${GRYPE_URL}) with DB ${{ steps.grype-scan.outputs.db-version }}. Used [grype_me](https://github.com/TomTonic/grype_me)."
+          LINE1="Daily supply chain vulnerability scan of [rtcompare ${RELEASE_TAG}](${RELEASE_URL}): **${{ steps.grype-scan.outputs.cve-count }} CVE's** (${{ steps.grype-scan.outputs.critical }} critical, ${{ steps.grype-scan.outputs.high }} high, ${{ steps.grype-scan.outputs.medium }} medium, ${{ steps.grype-scan.outputs.low }} low severity). Used [grype version ${GRYPE_VERSION}](${GRYPE_URL}) with DB build ${{ steps.grype-scan.outputs.db-version }}. Used [grype_me](https://github.com/TomTonic/grype_me)."
 
           NEW_BLOCK="${START}\n${LINE1}\n${END}"
 
