@@ -9,7 +9,7 @@ Daily supply chain vulnerability scan of [rtcompare v0.5.0](https://github.com/T
 <!-- vuln-scan:end -->
 
 <!-- grype-me-scan:start -->
-Daily supply chain vulnerability scan of [rtcompare v0.5.0](https://github.com/TomTonic/rtcompare/releases/tag/v0.5.0): **0 CVE's** (0 critical, 0 high, 0 medium, 0 low severity). Used [grype version 0.107.0](https://github.com/anchore/grype/releases/tag/v0.107.0) with DB v6.1.4, built 2026-01-31T06:20:12Z. Used [grype_me](https://github.com/TomTonic/grype_me).
+Daily supply chain vulnerability scan of [rtcompare v0.5.0](https://github.com/TomTonic/rtcompare/releases/tag/v0.5.0): **0 CVE's** (0 critical, 0 high, 0 medium, 0 low severity). Used [grype version 0.107.0](https://github.com/anchore/grype/releases/tag/v0.107.0) with DB build 2026-01-31T06:20:12Z. Used [grype_me](https://github.com/TomTonic/grype_me).
 <!-- grype-me-scan:end -->
 
 # rtcompare
