@@ -1,18 +1,11 @@
+# rtcompare
+
 [![Go Report Card](https://goreportcard.com/badge/github.com/TomTonic/rtcompare)](https://goreportcard.com/report/github.com/TomTonic/rtcompare)
 [![Go Reference](https://pkg.go.dev/badge/github.com/TomTonic/rtcompare.svg)](https://pkg.go.dev/github.com/TomTonic/rtcompare)
 [![Linter](https://github.com/TomTonic/rtcompare/actions/workflows/linter.yml/badge.svg)](https://github.com/TomTonic/rtcompare/actions/workflows/linter.yml)
 [![Tests](https://github.com/TomTonic/rtcompare/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/TomTonic/rtcompare/actions/workflows/coverage.yml)
 ![coverage](https://raw.githubusercontent.com/TomTonic/rtcompare/badges/.badges/main/coverage.svg)
-
-<!-- vuln-scan:start -->
-Daily supply chain vulnerability scan of [rtcompare v0.5.0](https://github.com/TomTonic/rtcompare/releases/tag/v0.5.0): **0 CVE's** (0 critical, 0 high, 0 medium, 0 low severity). Used [grype version 0.107.1](https://github.com/anchore/grype/releases/tag/v0.107.1) with DB schema v6.1.4, built 2026-02-06T06:29:15Z.
-<!-- vuln-scan:end -->
-
-<!-- grype-me-scan:start -->
-Daily supply chain vulnerability scan of [rtcompare v0.5.0](https://github.com/TomTonic/rtcompare/releases/tag/v0.5.0): **0 CVE's** (0 critical, 0 high, 0 medium, 0 low severity). Used [grype version 0.107.1](https://github.com/anchore/grype/releases/tag/v0.107.1) with DB build 2026-02-06T06:29:15Z. Used [grype_me](https://github.com/TomTonic/grype_me).
-<!-- grype-me-scan:end -->
-
-# rtcompare
+![Vulnerabilities](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/TomTonic/cbfad7cf38e139ba898fe41386efa4db/raw/grype_me-badge.json)
 
 ## Statistically significant runtime comparison for codepaths in golang
 

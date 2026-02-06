@@ -1,109 +1,55 @@
-
-name: Grype_Me Scan (latest release)
+---
+name: Refresh grype_me Security Badges
 
 on:
   schedule:
-    - cron: "53 7 * * *"   # daily 07:53 UTC - 1h after grype_me update (approx 06:56 UTC)
-  release:
-    types: [published]
-  workflow_dispatch: {}
+    - cron: '0 8 * * *' # every day at 08:00 UTC
+  workflow_dispatch:
 
 permissions:
-  contents: write           # README-Update + Commit
-
-env:
-  REPO: TomTonic/rtcompare
+  contents: read
 
 jobs:
-  scan-latest-release:
+  update-badge:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Harden Runner
+      - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
-  
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          # Ensure we can update/commit README on the default branch.
-          # (On release events, the default checkout ref can be the tag commit.)
-          ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 0
-          fetch-tags: true
 
-      - name: Scan latest release for vulnerabilities
-        id: grype-scan
-        uses: TomTonic/grype_me@v1
-        with:
-          scan: 'latest_release'
-
-      - name: Get latest release tag
-        id: release
-        run: |
-          RELEASE_TAG=$(git tag --sort=-v:refname | head -n1)
-          if [ -z "$RELEASE_TAG" ]; then
-            echo "Error: No release tags found in repository" >&2
-            exit 1
-          fi
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Update README block
+      - name: Ensure required secrets is set
+        shell: bash
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
           set -euo pipefail
-          START="<!-- grype-me-scan:start -->"
-          END="<!-- grype-me-scan:end -->"
-
-          RELEASE_TAG="${{ steps.release.outputs.tag }}"
-          RELEASE_URL="https://github.com/${REPO}/releases/tag/${RELEASE_TAG}"
-
-          GRYPE_VERSION="${{ steps.grype-scan.outputs.grype-version }}"
-          if [[ "$GRYPE_VERSION" == v* ]]; then
-            GRYPE_VERSION_TAG="$GRYPE_VERSION"
-          else
-            GRYPE_VERSION_TAG="v$GRYPE_VERSION"
+          if [[ -z "$GIST_TOKEN" ]]; then
+            echo "Missing required secret: GIST_TOKEN" >&2
+            exit 1
           fi
-          GRYPE_URL="https://github.com/anchore/grype/releases/tag/${GRYPE_VERSION_TAG}"
 
-          LINE1="Daily supply chain vulnerability scan of [rtcompare ${RELEASE_TAG}](${RELEASE_URL}): **${{ steps.grype-scan.outputs.cve-count }} CVE's** (${{ steps.grype-scan.outputs.critical }} critical, ${{ steps.grype-scan.outputs.high }} high, ${{ steps.grype-scan.outputs.medium }} medium, ${{ steps.grype-scan.outputs.low }} low severity). Used [grype version ${GRYPE_VERSION}](${GRYPE_URL}) with DB build ${{ steps.grype-scan.outputs.db-version }}. Used [grype_me](https://github.com/TomTonic/grype_me)."
+      - name: Checkout repository (with tags)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # fetch-depth: 0 (non-default) - fetch full history to ensure tag lookups work correctly
+          fetch-depth: 0
+          # fetch-tags: true (non-default) - need tags to detect latest_release for the badge
+          fetch-tags: true
 
-          NEW_BLOCK="${START}\n${LINE1}\n${END}"
+      - name: grype_me latest_release of GitHub Action
+        id: grype_me_release
+        uses: TomTonic/grype_me@v1 # don't pin, rolling tag changes daily
+        with:
+          scan: 'latest_release'
+          fail-build: false
 
-          awk -v start="$START" -v end="$END" -v repl="$NEW_BLOCK" '
-            BEGIN{found=0; inblock=0}
-            {
-              line = $0
-              # Trim leading and trailing spaces/tabs before comparing to markers
-              gsub(/^[ \t]+|[ \t]+$/, "", line)
-
-              if (line == start) {
-                print repl
-                inblock = 1
-                found = 1
-              } else if (line == end) {
-                inblock = 0
-              } else if (!inblock) {
-                print $0
-              }
-            }
-            END{
-              if (found==0){
-                print "WARN: markers not found; appending new block" > "/dev/stderr"
-                print ""
-                print repl
-              }
-            }
-          ' README.md > README.tmp && mv README.tmp README.md
-
-      - name: Commit and push if changed
-        run: |
-          if git diff --quiet -- README.md; then
-            echo "No README changes."
-          else
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add README.md
-            git commit -m "Automated CVE scan of release ${{ steps.release.outputs.tag }} (grype_me)"
-            git push
-          fi
+      - name: Write badge data to gist
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: cbfad7cf38e139ba898fe41386efa4db
+          filename: grype_me-badge.json
+          label: ✊ grype_me
+          message: ${{ steps.grype_me_release.outputs.badge-message }} in latest module release
+          color: ${{ steps.grype_me_release.outputs.badge-color }}
