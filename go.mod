@@ -4,7 +4,7 @@ go 1.25.5
 
 require github.com/stretchr/testify v1.11.1
 
-require golang.org/x/sys v0.40.0
+require golang.org/x/sys v0.41.0
 
 require github.com/TomTonic/Set3 v0.4.2
 
