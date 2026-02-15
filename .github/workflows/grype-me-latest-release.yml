@@ -43,13 +43,6 @@ jobs:
         with:
           scan: 'latest_release'
           fail-build: false
-
-      - name: Write badge data to gist
-        uses: schneegans/dynamic-badges-action@v1.7.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: cbfad7cf38e139ba898fe41386efa4db
-          filename: grype_me-badge.json
-          label: ✊ grype_me
-          message: ${{ steps.grype_me_release.outputs.badge-message }} in latest module release
-          color: ${{ steps.grype_me_release.outputs.badge-color }}
+          gist-token: ${{ secrets.GIST_TOKEN }}
+          gist-id: cbfad7cf38e139ba898fe41386efa4db
+          gist-filename: 'release_scan'
