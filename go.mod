@@ -1,6 +1,6 @@
 module github.com/TomTonic/rtcompare
 
-go 1.25
+go 1.25.10
 
 require github.com/stretchr/testify v1.11.1
 
