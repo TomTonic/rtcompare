@@ -83,13 +83,19 @@ func (d DriftReport) String() string {
 // standard error of 0.4, so ties do not break it and it errs slightly
 // conservative. On real timing series with their order randomly permuted, which
 // preserves the value distribution exactly while destroying any trend, it fired
-// at 4.8% over 1200 permutations against 5.0 plus or minus 1.3.
+// at 4.80% over 6000 permutations drawn from 600 series, a 95% interval of
+// [4.27%, 5.33%] that covers the nominal rate. Permutations of one series are
+// not independent of one another by construction, so that is the cluster-robust
+// interval; it happens to match the naive binomial one almost exactly, the
+// design effect being 0.95.
 //
-// Those same real series, left in the order they were measured, tripped the test
-// in 20% of 60 runs, roughly three standard errors above the 5% that shuffling
-// produced. Their mean lag-1 autocorrelation was +0.06, about three standard
-// errors above zero. So measurement series on an ordinary machine do carry
-// order structure, and it is not a quirk of how their values are distributed.
+// Those same 600 series, left in the order they were measured, tripped the test
+// in 13.0% of runs, a 95% interval of [10.3%, 15.7%]. The gap to the permuted
+// rate is 8.2 percentage points at z = 5.9. Their mean lag-1 autocorrelation was
+// +0.083, with a 95% interval of [+0.069, +0.096] built from the spread actually
+// observed across series rather than one assumed from the null. So measurement
+// series on an ordinary machine do carry order structure, and it is not a quirk
+// of how their values are distributed.
 // Whether a given series carries a slow trend or short-range correlation between
 // neighbours is not something this test separates; both make the samples
 // non-exchangeable, which is what the bootstrap assumes they are.
