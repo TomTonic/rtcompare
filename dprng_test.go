@@ -213,14 +213,27 @@ func TestUInt32N_CompareToModulo(t *testing.T) {
 				resultsObs = append(resultsObs, dObs)
 				resultsRef = append(resultsRef, dRef)
 			}
-			confidenceForThresholdObsBetter := BootstrapConfidence(resultsObs, resultsRef, []float64{maxRelThreshold}, 10_000, uint64(0))
-			confidenceForThresholdRefBetter := BootstrapConfidence(resultsRef, resultsObs, []float64{maxRelThreshold}, 10_000, uint64(0))
+			confObsBetter := BootstrapConfidence(resultsObs, resultsRef, []float64{maxRelThreshold}, 10_000, uint64(0))[maxRelThreshold]
+			confRefBetter := BootstrapConfidence(resultsRef, resultsObs, []float64{maxRelThreshold}, 10_000, uint64(0))[maxRelThreshold]
 
-			if confidenceForThresholdObsBetter[maxRelThreshold] != confidenceForThresholdRefBetter[maxRelThreshold] {
-				t.Errorf("confidenceForObsBetter and confidenceForRefBetter differ: confidence %.4f vs %.4f for threshold %.2f\nmedian delta obs: %.2f median delta ref: %.2f of %.1f samples per bin\n",
-					confidenceForThresholdObsBetter[maxRelThreshold],
-					confidenceForThresholdRefBetter[maxRelThreshold],
-					maxRelThreshold,
+			// The claim under test is that neither reduction is better than the
+			// other by maxRelThreshold, so both one-sided confidences must be
+			// near zero.
+			//
+			// Requiring them to be exactly equal, as this once did, compares two
+			// Monte-Carlo estimates with ==. Both are fractions of 10,000
+			// bootstrap replicates, so a single replicate landing differently
+			// makes them differ by 0.0001 and fails the test while saying
+			// nothing about either reduction. A tolerance detects a genuine
+			// advantage just as well: were one reduction really better by the
+			// threshold, its confidence would approach 1, not 0.0001.
+			const maxConfidence = 0.05
+			if confObsBetter > maxConfidence || confRefBetter > maxConfidence {
+				t.Errorf("expected neither reduction to beat the other by %.0f%%, but got confidence %.4f (Lemire better) and %.4f (modulo better), tolerance %.2f\nmedian delta obs: %.2f median delta ref: %.2f of %.1f samples per bin\n",
+					maxRelThreshold*100,
+					confObsBetter,
+					confRefBetter,
+					maxConfidence,
 					QuickMedian(resultsObs),
 					QuickMedian(resultsRef),
 					float64(samplesPerBucket),
