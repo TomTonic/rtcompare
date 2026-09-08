@@ -1,16 +1,14 @@
 module github.com/TomTonic/rtcompare
 
-go 1.25.10
-
-require github.com/stretchr/testify v1.11.1
-
-require golang.org/x/sys v0.47.0
-
-require github.com/TomTonic/Set3 v0.4.2
+go 1.26.0
 
 require (
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/TomTonic/Set3 v0.4.2
+	github.com/stretchr/testify v1.12.1
+	golang.org/x/sys v0.48.0
+)
+
+require (
 	github.com/dolthub/maphash v0.1.0 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 )
