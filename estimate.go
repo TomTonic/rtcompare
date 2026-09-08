@@ -96,6 +96,15 @@ func (e Estimate) String() string {
 // [DefaultResamples]. An error is returned if either input holds fewer than
 // [MinimumDataPoints] values or if level is not strictly between zero and one.
 func EstimateDifference(A, B []float64, level float64, resamples uint64) (Estimate, error) {
+	// Block length one is single-observation resampling, which is what this
+	// function has always done; [Compare] uses the shared core with longer
+	// blocks when it measures dependence between neighbouring samples.
+	return estimateDifference(A, B, level, resamples, 1)
+}
+
+// estimateDifference is the shared implementation of EstimateDifference and the
+// interval [Compare] builds. A blockLength of one gives the ordinary bootstrap.
+func estimateDifference(A, B []float64, level float64, resamples uint64, blockLength int) (Estimate, error) {
 	if uint64(len(A)) < MinimumDataPoints || uint64(len(B)) < MinimumDataPoints {
 		return Estimate{}, fmt.Errorf("not enough data points: need at least %d measurements for each input", MinimumDataPoints)
 	}
@@ -117,8 +126,8 @@ func EstimateDifference(A, B []float64, level float64, resamples uint64) (Estima
 	deltas := make([]float64, 0, resamples)
 	rng := NewCPRNG(bootstrapCPRNGBufferBytes)
 	for range resamples {
-		medA := QuickMedian(blockSample(A, 1, rng.Uint32N))
-		medB := QuickMedian(blockSample(B, 1, rng.Uint32N))
+		medA := QuickMedian(blockSample(A, blockLength, rng.Uint32N))
+		medB := QuickMedian(blockSample(B, blockLength, rng.Uint32N))
 		if d := relativeDelta(medA, medB); !math.IsNaN(d) {
 			deltas = append(deltas, d)
 		}

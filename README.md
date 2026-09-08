@@ -15,6 +15,7 @@ Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, 
 
 ## Features
 
+- Answer the whole question in one call: `Compare` sizes the batches, measures what the harness invents on its own, runs the comparison, tests for drift, picks the resampling scheme from the dependence it observed, and reports a verdict with the fine print that qualifies it.
 - Collect timing or memory samples for two implementations under a harness that interleaves their measurement order, keeps setup out of the measured region, and places garbage collection deterministically.
 - Size batches automatically, so that the system clock contributes at most a chosen share of error. This is what makes differences far below the clock's resolution measurable: a per-operation difference of 1.89 ns was recovered to within 0.07 percentage points against a 41 ns clock floor.
 - Estimate, by bootstrap resampling, the confidence that A beats B by at least a given relative margin.
@@ -52,7 +53,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 
 	"github.com/TomTonic/rtcompare"
 )
@@ -69,47 +69,38 @@ func main() {
 	}}
 	candidateB := rtcompare.Candidate{Name: "B", Batch: func(n uint64) { /* ... */ }}
 
-	// InnerLoops left at zero: Collect sizes the batches itself.
-	opts := rtcompare.CollectOptions{GCBetween: true}
-
-	// Ask what this machine invents on its own before asking what the
-	// candidates differ by. Validate both: they need not be equally well
-	// behaved, and the comparison is only as good as the worse of them.
-	floor := 0.0
-	for _, c := range []rtcompare.Candidate{candidateA, candidateB} {
-		v, err := rtcompare.ValidateHarness(c, rtcompare.ValidationOptions{Collect: opts})
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(v)
-		floor = max(floor, v.NoiseFloor)
-	}
-
-	samplesA, samplesB, err := rtcompare.Collect(candidateA, candidateB, opts)
+	// Everything is left at its default: the batches are sized so that the clock
+	// contributes at most a tenth of a percent, both candidates are validated
+	// against themselves, the order is interleaved, and the resampling scheme is
+	// chosen from the dependence actually measured.
+	report, err := rtcompare.Compare(candidateA, candidateB, rtcompare.CompareOptions{
+		Thresholds: []float64{0.05, 0.10, 0.20},
+	})
 	if err != nil {
 		panic(err)
 	}
 
-	observed := 1 - rtcompare.Median(samplesA)/rtcompare.Median(samplesB)
-	if math.Abs(observed) <= floor {
-		fmt.Printf("%.2f%% is inside the %.2f%% noise floor; nothing resolved\n",
-			observed*100, floor*100)
-		return
-	}
+	fmt.Println(report)
 
-	results, err := rtcompare.CompareSamplesDefault(samplesA, samplesB,
-		[]float64{floor, 0.05, 0.10, 0.20})
-	if err != nil {
-		panic(err)
-	}
-	for _, r := range results {
-		fmt.Printf("Speedup >= %.2f%% -> confidence %.2f%%\n",
-			r.RelativeSpeedupSampleAvsSampleB*100, r.Confidence*100)
+	if report.Resolved {
+		fmt.Printf("A is faster by %s\n", report.Estimate)
 	}
 }
 ```
 
-See `cmd/rtcompare-example` for a full runnable version that compares this package's own two median implementations, and that finds one of them badly enough behaved to need block resampling.
+which prints something like
+
+```
+A 712.7 per op, B 1262 per op
+difference +43.52% [+42.31%, +44.48%] at 95% confidence
+noise floor 1.765%, autocorrelation +0.344, resampled in blocks of 5
+resolved: A is faster than B
+  warning: candidate B drifted during the run, shifting -7.12% from its first
+  half to its second; the machine did not hold still
+  confidence that A beats B by 5.00%: 100.0%
+```
+
+`Compare` validates both candidates against themselves before comparing them, so it costs a few seconds. Set `SkipValidation` to pay only for the measurement, accepting that the result then has no noise floor to be read against. The individual steps are all exported too, and `cmd/rtcompare-example` shows both: the one call, and then the same measurements taken apart by hand.
 
 ## Technical background
 
@@ -136,6 +127,12 @@ Use rtcompare when you want:
 The standard `testing` package is excellent for microbenchmarks and tight per-op measurements. rtcompare complements it by focusing on sampling strategy, resampling inference, and reproducible comparisons across implementations.
 
 ## API highlights
+
+The one call:
+
+- `Compare(a, b, CompareOptions)` — runs the whole protocol and returns a `Report`. `Report.Resolved` is the short answer, `Report.Warnings` is the fine print, and the rest of the struct is the evidence: the samples, the estimate, the per-candidate validations, the drift tests and the resampling choice.
+
+The individual steps, for when the summary is not enough:
 
 Measuring:
 
