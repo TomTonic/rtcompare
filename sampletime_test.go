@@ -2,6 +2,7 @@ package rtcompare
 
 import (
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +51,14 @@ func TestGetSampleTimePrecisionSetsAndCaches(t *testing.T) {
 	prev := precision
 	defer func() { precision = prev }()
 
+	// GetSampleTimePrecision computes at most once per process, guarded by
+	// precisionOnce. Forcing a recomputation therefore means arming that Once
+	// again as well; resetting `precision` alone is not enough. Without this the
+	// test reads back the -1 written below as soon as anything earlier in the
+	// process has already triggered the computation, which makes it depend on
+	// test execution order.
+	precisionOnce = sync.Once{}
+
 	precision = int64(-1)
 	p1 := GetSampleTimePrecision()
 	p2 := GetSampleTimePrecision()
@@ -66,6 +75,12 @@ func TestGetSampleTimePrecisionSetsAndCaches(t *testing.T) {
 func TestGetSampleTimePrecisionRespectsCachedValue(t *testing.T) {
 	prev := precision
 	defer func() { precision = prev }()
+
+	// The mirror image of the hazard in the test above: this one needs the
+	// one-shot computation to have happened already, otherwise the first call
+	// below overwrites the value being tested. Trigger it explicitly instead of
+	// relying on an earlier test to have done so.
+	GetSampleTimePrecision()
 
 	precision = int64(123456)
 	got := GetSampleTimePrecision()
