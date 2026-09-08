@@ -400,10 +400,12 @@ func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 			delta = 1.0 - medA/denom
 		}
 
-		// The comparison is written out per threshold rather than stopping at
-		// the first miss: the thresholds are sorted, but a NaN threshold sorts
-		// to the front and would abort the scan even though every real
-		// threshold behind it still has to be evaluated.
+		// Written out per threshold rather than stopping at the first miss.
+		// The thresholds are sorted ascending, so an early exit would be
+		// correct for finite values and delta, but it would also be a trap for
+		// anyone later relaxing the NaN filter above: a NaN sorts to the front
+		// and `delta < NaN` is false, so the scan would abort before evaluating
+		// anything. The full scan costs one comparison per threshold.
 		for j, threshold := range thresholds {
 			if delta >= threshold {
 				counts[j]++

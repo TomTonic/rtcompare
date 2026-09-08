@@ -10,10 +10,11 @@ import (
 // [CalibrateInnerLoops] allows the system clock's granularity to contribute,
 // when CalibrationOptions.MaxQuantizationError is left at zero.
 //
-// One tenth of a percent is deliberately far below the harness noise floor,
-// which measured 0.6% to 0.8% in A/A experiments. Once quantization is an order
-// of magnitude smaller than the noise it stops mattering: at 0.6% noise, adding
-// 0.1% of quantization in quadrature yields 0.608%. Buying more precision than
+// One tenth of a percent is deliberately well below the harness noise floor,
+// which in A/A experiments has ranged from a few tenths of a percent to over
+// one. Once quantization is an order of magnitude smaller than the noise it
+// stops mattering: against 0.6% of noise, adding 0.1% of quantization in
+// quadrature yields 0.608%. Buying more precision than
 // that only lengthens batches without making the magnitude of a difference more
 // trustworthy.
 //

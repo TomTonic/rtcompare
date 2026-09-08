@@ -54,10 +54,14 @@ var (
 //     41, 42, 83, 84, 125, 166, 167, 208. Here the tick dominates and the
 //     returned value is the resolution.
 //   - On Linux/amd64, where clock_gettime resolves to a nanosecond through the
-//     vDSO, the call cost is the larger of the two and the returned value is
-//     closer to that overhead than to any tick.
+//     vDSO, the call is expected to be the larger of the two, which would make
+//     the returned value closer to that overhead than to any tick. This has not
+//     been measured here; the existing tests expect a value below 50 ns, which
+//     is consistent with it.
 //   - On Windows the timestamp comes from QueryPerformanceCounter, whose
-//     frequency is typically 10 MHz, giving a 100 ns tick.
+//     frequency is typically 10 MHz, giving a 100 ns tick. This too is from
+//     documentation and from what this package's tests assert, not from a
+//     measurement taken here.
 //
 // In every one of those cases the returned number answers the same question and
 // is the one worth having: this is as fine as measurement gets here. Note that

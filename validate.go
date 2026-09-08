@@ -55,13 +55,13 @@ type HarnessValidation struct {
 	// TieRate is the share of bootstrap replicates in which both resampled
 	// medians came out exactly equal, averaged over the runs.
 	//
-	// Timing measurements are quantized, so identical values are common and
-	// ties with them: an unremarkable A/A run here produced 102 samples holding
-	// only 35 distinct values, and tied medians in 17.8% of replicates. Since
-	// the confidence at threshold zero asks whether delta >= 0, every one of
-	// those ties counts as "A at least as fast", which lifts it by half the tie
-	// rate. Measured against the tie-split figure the offset matched that
-	// prediction to three decimals.
+	// Timing measurements are quantized, so identical values are common and ties
+	// with them. One A/A run here produced 102 samples holding only 35 distinct
+	// values, and tied medians in 14.4% of its replicates. Since the confidence
+	// at threshold zero asks whether delta >= 0, every one of those ties counts
+	// as "A at least as fast", which lifts it by half the tie rate. Over 40 runs
+	// of that setup the mean tie rate was 17.8% and the offset against the
+	// tie-split figure was 0.089, matching half of it to three decimals.
 	//
 	// A high tie rate means the measurement is coarse relative to the
 	// differences being asked about. The fix is longer batches, and only longer
@@ -167,8 +167,9 @@ type ValidationOptions struct {
 // quantifies how much the estimate would move if the same measurements were
 // drawn again; it cannot see a bias that affected every measurement equally, and
 // it will report a tight confidence around one. Measured on identical code, this
-// package has seen apparent differences of 0.6% to 0.8% reported with high
-// confidence. Only an A/A experiment exposes that.
+// package has seen apparent differences ranging from a few tenths of a percent
+// to well over one, carried with high confidence. Only an A/A experiment
+// exposes that.
 //
 // The cost is Runs times that of one comparison, plus one calibration.
 //

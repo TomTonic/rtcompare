@@ -79,48 +79,43 @@ func (c Candidate) label(position string) string {
 // Order selects the sequence in which the two candidates are measured within
 // each repeat.
 //
-// Measurement order matters. Machines drift over the course of a measurement
-// run (thermal throttling, frequency scaling, page cache warm-up), and a fixed
-// A-then-B order converts that drift into a systematic bias in favour of one
-// candidate.
+// Measurement order is a classical source of systematic bias. If the machine
+// changes over the course of a run, through thermal throttling, frequency
+// scaling or page cache warm-up, then a fixed A-then-B order turns that change
+// into an apparent difference between the candidates, because one of them is
+// always measured in the later, altered conditions. Interleaving removes the
+// mechanism, and it is free: the order is decided before the clock is read.
 //
-// The three strategies were calibrated against each other by running 25
-// independent A/A experiments each, that is, the same candidate measured as both
-// A and B. An unbiased harness must report a mean confidence of 0.5 for "A is
-// faster than B":
-//
-//	Order        mean P   median P   P > 0.95
-//	Sequential    0.608      0.675         0%
-//	ABBA          0.473      0.507         0%
-//	Random        0.526      0.476         8%
-//
-// Deciding the order costs nothing: the decision is made before the clock is
-// read, outside the measured region.
+// Whether it matters on a given machine is a separate question, and one worth
+// checking rather than assuming. Across 40 A/A experiments here, no strategy was
+// measurably biased: mean confidences of 0.487 (Sequential), 0.475 (ABBA) and
+// 0.517 (Random), each within one standard error of about 0.04 of the 0.5 that
+// an unbiased setup must produce. Treat interleaving as insurance with a zero
+// premium rather than as a demonstrated correction, and use [ValidateHarness] to
+// find out what your own machine and options actually do.
 type Order int
 
 const (
 	// OrderABBA alternates the order every repeat: A then B on even repeats,
 	// B then A on odd repeats. Over each block of four batches both candidates
 	// occupy the same mean position in the run and are each preceded by the
-	// other exactly half the time, which cancels first-order drift as well as
-	// carry-over effects between neighbouring batches. It measured best in the
-	// A/A calibration above and is the zero value, so the default is the safe
-	// choice.
+	// other exactly half the time, which cancels a first-order trend across the
+	// run as well as carry-over between neighbouring batches. It is the zero
+	// value, so the arrangement that removes the mechanism is what you get
+	// without asking.
 	OrderABBA Order = iota
 
 	// OrderRandom picks the order independently at random for each repeat,
-	// driven by CollectOptions.Seed for reproducibility. It is unbiased on
-	// average but showed noticeably heavier tails than OrderABBA in the A/A
-	// calibration, that is, a higher chance of producing a spuriously confident
-	// result from pure noise. Use it when the interference you are worried about
-	// might itself be periodic and could alias with the strict alternation of
-	// ABBA; prefer OrderABBA otherwise.
+	// driven by CollectOptions.Seed for reproducibility. Use it when the
+	// interference you are worried about might itself be periodic and could
+	// alias with the strict alternation of ABBA; prefer OrderABBA otherwise,
+	// since its balance is exact rather than expected.
 	OrderRandom
 
-	// OrderSequential always measures A before B. This reproduces the naive
-	// methodology and exists for comparison and regression testing. It is
-	// measurably biased, see the A/A calibration above, and should not be used
-	// to produce results.
+	// OrderSequential always measures A before B. It is the naive arrangement,
+	// kept for comparison and for regression testing: it is the one order in
+	// which a trend across the run maps directly onto an apparent difference
+	// between the candidates. Prefer OrderABBA for results.
 	OrderSequential
 )
 
@@ -179,8 +174,8 @@ type CollectOptions struct {
 	// granularity, so per operation it shrinks to granularity/InnerLoops. With a
 	// 100 ns clock (Windows QPC) and InnerLoops = 20000 the residual quantization
 	// error is 0.005 ns/op. Differences far below one clock tick are recoverable
-	// this way; a per-operation difference of 1.89 ns was measured to 0.06
-	// percentage points of accuracy against a 41 ns clock floor.
+	// this way; a per-operation difference of 1.89 ns was recovered to within
+	// 0.07 percentage points against a 41 ns clock floor.
 	//
 	// Zero calibrates the value automatically via [CalibrateInnerLoops], sizing
 	// batches so that the clock contributes at most MaxQuantizationError of
@@ -294,17 +289,18 @@ type CollectOptions struct {
 // counter, accumulator, call frames, any input regeneration the candidate needs).
 // That overhead is present in both candidates and therefore never flips the sign
 // of a comparison, but it does shrink its magnitude. In a controlled experiment
-// where the true difference was exactly 50%, the measured difference was 34%
+// where the true difference was exactly 50%, the measured difference was 35%,
 // because a fixed 1.81 ns/op of loop overhead sat on top of 2.13 ns/op of real
 // work. Subtracting an empty-loop baseline does not repair this, because the
-// compiler optimizes an empty loop differently than a real one; the correction
-// recovered only 2 of the 16 missing percentage points. Use [Candidate.Setup]
+// compiler optimizes an empty loop differently than a real one; that correction
+// recovered 2 of the 15 missing percentage points. Use [Candidate.Setup]
 // for everything that can be hoisted out of the loop, and read the result as the
 // speedup of the measured region as a whole, not of the isolated function.
 //
 // A note on the noise floor, which choosing an [Order] does not remove: across
-// 25 A/A runs of an identical candidate, the observed difference between the two
-// sample sets reached 0.6% to 0.8% under every order strategy. Differences of
+// many A/A runs of identical candidates, the observed difference between the two
+// sample sets has reached anywhere from a few tenths of a percent to well over
+// one, under every order strategy. Differences of
 // that size are indistinguishable from machine noise in a single run no matter
 // how many bootstrap resamples are spent on them, because the bootstrap only
 // quantifies the spread of the samples it was given and cannot see a bias that

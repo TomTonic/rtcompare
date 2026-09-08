@@ -138,11 +138,16 @@ func TestValidateHarnessResolves(t *testing.T) {
 	}
 }
 
-func TestValidateHarnessDetectsBiasedOrder(t *testing.T) {
-	// The point of the API: with the deliberately biased ordering, the mean
-	// confidence should drift away from 0.5 more than with interleaving. This
-	// is a stochastic property, so the test only demands that both orders stay
-	// inside a generous band and reports the numbers for inspection.
+func TestValidateHarnessCentersOnHalf(t *testing.T) {
+	// An A/A experiment compares identical code, so a setup that is not biased
+	// must centre on a confidence of 0.5. This is what the API exists to check.
+	//
+	// The test asserts that only for the interleaved order, and only inside a
+	// generous band: a single validation of a few runs has a standard error of
+	// well over 0.1, far too coarse to resolve a real ordering effect. The
+	// sequential figure is logged for inspection rather than asserted on. Do not
+	// read a difference between the two logged numbers as evidence of one; 40
+	// A/A runs per order were unable to separate them on this machine.
 	c := steadyCandidate(2)
 	run := func(order Order) HarnessValidation {
 		opt := quickValidation(8)
