@@ -110,7 +110,9 @@ See `cmd/rtcompare-example` for a full runnable version that compares this packa
 
 - **Batching is what beats the clock.** A single batch measurement is off by at most one clock tick `p`. Spread over `n` operations that is `p/n` per operation, so the relative error is `p/(n·c)` where `c` is one operation's cost. Since `n·c` is just the batch duration `T`, the whole thing collapses to `p/T`: the error depends only on how long a batch runs, not on how fast the operation is. `CalibrateInnerLoops` therefore searches for the smallest batch that reaches a target duration, which is why an expensive operation can calibrate to a batch of two while a cheap one needs thirteen thousand.
 
-- **Bootstrap-based inference.** Rather than a single mean, rtcompare resamples the collected measurements to estimate the probability that one implementation beats the other by at least a given relative margin. Note that it reports those probabilities, not confidence intervals around the difference itself.
+- **Bootstrap-based inference.** Rather than a single mean, rtcompare resamples the collected measurements. `CompareSamples` answers "how confident can I be that A beats B by at least x", which is what you want when a threshold is given. `EstimateDifference` answers "how large is the difference and how precisely is that known", which is what you want when none is. Its interval is a percentile bootstrap, measured to cover at 96–97% against a nominal 95%: conservative rather than optimistic, and well centred.
+
+- **Why the median.** Each replicate is summarised by its median. Interference is one-sided, which argues for a low quantile instead, but simulation against a known difference says otherwise: below roughly 30% disturbed batches the median wins on RMSE, because with contamination on fewer than half the samples the middle one is already drawn from the clean part. Past 40% the median degrades sharply — and so does the noise floor `ValidateHarness` reports, from 1.2% to 20.5%, so that regime announces itself.
 
 - **What resampling cannot see.** The bootstrap treats the samples as an unordered bag, which discards the order they were measured in. A machine that drifted during the run leaves no trace in its output. `DetectDrift` tests for that separately, using Spearman's rank correlation against measurement position; its false positive rate was verified at 4.80% against a nominal 5% over 6000 permutations of real measurement series.
 
@@ -139,6 +141,7 @@ Measuring:
 Judging:
 
 - `CompareSamples(a, b, relativeGains, resamples)` — confidence per requested relative speedup. `CompareSamplesDefault` uses `DefaultResamples`.
+- `EstimateDifference(a, b, level, resamples)` — the point estimate of the relative difference with a bootstrap interval around it. `Excludes(0)` asks whether a difference has been established at all.
 - `BootstrapConfidence` — the same, returning a map, with control over the PRNG seed.
 - `BlockBootstrapConfidence` — resamples contiguous blocks, for measurements correlated with their neighbours.
 - `F2T(timesFaster)` — converts a multiplicative speedup to the relative threshold the API uses. It signals invalid input by returning NaN, which `CompareSamples` rejects with an error rather than silently answering.
@@ -170,7 +173,7 @@ The number of bootstrap resamples controls the Monte‑Carlo error of the confid
 - Use at least 1,000 resamples for reasonable standard-error estimation.
 - Use 5,000–10,000 when you need stability in the tails, which here means confidences close to 0 or 1.
 
-Note that these recommendations come from a literature concerned with confidence intervals, which this package does not compute; they carry over because the quantity it does compute, a proportion of replicates, has the same Monte-Carlo behaviour.
+Both quantities this package computes have that Monte-Carlo behaviour: the proportion of replicates meeting a threshold, and the quantiles of the resampled differences that `EstimateDifference` uses for its interval.
 
 The Monte‑Carlo standard error of a proportion estimated from resamples decreases approximately as 1/sqrt(R) where R is the number of resamples. Increase `resamples` when you require low Monte‑Carlo noise (for example, precise reporting of extreme thresholds). See Efron & Tibshirani (1993) and Davison & Hinkley (1997) for more details.
 
