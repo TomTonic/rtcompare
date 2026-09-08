@@ -63,9 +63,29 @@ type HarnessValidation struct {
 	// rate. Measured against the tie-split figure the offset matched that
 	// prediction to three decimals.
 	//
-	// A high tie rate is itself informative: it means the measurement is coarse
-	// relative to the differences being asked about, and that a longer batch or
-	// more repeats would buy real resolution.
+	// A high tie rate means the measurement is coarse relative to the
+	// differences being asked about. The fix is longer batches, and only longer
+	// batches. One measurement is an integer count of clock ticks divided by the
+	// batch size, so its granularity is precision/InnerLoops: raising InnerLoops
+	// makes the individual value finer and ties correspondingly rarer. Raising
+	// Repeats does not, and measurably does not; it draws more values from the
+	// same coarse set.
+	//
+	// Measured on one candidate here, holding Repeats at 51 and varying only the
+	// batch size:
+	//
+	//	InnerLoops    granularity    tie rate
+	//	     1,000     0.042 ns/op       86.3%
+	//	     5,000     0.008 ns/op       15.0%
+	//	   100,000     0.0004 ns/op       1.5%
+	//	   400,000     0.0001 ns/op       0.0%
+	//
+	// and varying only Repeats at a fixed batch size of 20,000, tie rates of
+	// 2.2%, 2.3%, 2.8% and 1.8% for 21, 51, 101 and 201 repeats: no trend.
+	//
+	// In practice the knob to turn is CollectOptions.MaxQuantizationError, which
+	// is what sizes the batch. See its documentation for what the default costs
+	// here.
 	TieRate float64
 
 	// FalseSignalRate is the fraction of runs whose confidence fell outside

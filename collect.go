@@ -139,10 +139,17 @@ func (o Order) String() string {
 }
 
 // DefaultRepeats is the number of timing samples [Collect] gathers per candidate
-// when CollectOptions.Repeats is left at zero. It is odd so that the median of
-// the samples is an observed value rather than an interpolation, and it is
-// comfortably above [MinimumDataPoints] so that the bootstrap has enough
-// distinct values to resample from.
+// when CollectOptions.Repeats is left at zero.
+//
+// It is comfortably above [MinimumDataPoints], so that the bootstrap has enough
+// distinct values to resample from, and it is odd, so that [Median] returns the
+// true middle sample. That package's Median never interpolates; for an even
+// count it returns the upper of the two middle values, which biases it slightly
+// upwards. An odd count avoids the question.
+//
+// Note that raising this does not make a coarse measurement finer. More repeats
+// draw more values from the same quantized set; only a longer batch adds
+// resolution. See CollectOptions.MaxQuantizationError.
 const DefaultRepeats = 101
 
 // DefaultWarmup is the number of unmeasured batches [Collect] runs per candidate
@@ -187,6 +194,22 @@ type CollectOptions struct {
 	// granularity may contribute when InnerLoops is calibrated automatically.
 	// Zero selects [DefaultMaxQuantizationError]. Ignored when InnerLoops is set
 	// explicitly.
+	//
+	// It has a second effect worth knowing about. Quantization does not only
+	// blur a measurement, it also collapses distinct measurements onto the same
+	// value, and equal values produce equal medians. That matters for the
+	// confidence at threshold zero, which asks whether delta >= 0 and so counts
+	// every tie as "A at least as fast". Measured on one candidate here:
+	//
+	//	MaxQuantizationError   InnerLoops   batch      tie rate
+	//	                0.01          387   4.5 us       100.0%
+	//	               0.001         4072    46 us        15.3%   (the default)
+	//	              0.0001        44710   482 us         0.6%
+	//
+	// The default is sized for accuracy of a difference's magnitude, where it
+	// performs well. If the question is instead "is A faster at all", tighten it
+	// by an order of magnitude and pay ten times the batch length for it.
+	// [ValidateHarness] reports the tie rate a setup actually produces.
 	MaxQuantizationError float64
 
 	// MaxInnerLoops caps the batch size automatic calibration will try. Zero

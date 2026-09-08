@@ -14,7 +14,16 @@ import (
 // which measured 0.6% to 0.8% in A/A experiments. Once quantization is an order
 // of magnitude smaller than the noise it stops mattering: at 0.6% noise, adding
 // 0.1% of quantization in quadrature yields 0.608%. Buying more precision than
-// that only lengthens batches without making results more trustworthy.
+// that only lengthens batches without making the magnitude of a difference more
+// trustworthy.
+//
+// It is sized for that question, the magnitude of a difference, and not for the
+// separate question of whether a difference exists at all. Quantization also
+// collapses distinct measurements onto equal values, and equal values tie; at
+// this target an ordinary candidate tied in about 15% of bootstrap replicates,
+// which inflates the confidence at a threshold of zero. Tightening the target
+// tenfold took that to 0.6% at ten times the batch length. See
+// CollectOptions.MaxQuantizationError for the measurements.
 const DefaultMaxQuantizationError = 0.001
 
 // DefaultMaxInnerLoops caps how far [CalibrateInnerLoops] will grow the batch
@@ -102,12 +111,11 @@ type CalibrationOptions struct {
 // calibrate to a batch size of one; the criterion is the batch duration, not the
 // number of operations.
 //
-// The search itself is cheap, a few hundred microseconds in practice. What is
-// not cheap is the first call in a process, which pays for
-// [GetSampleTimePrecision]: measuring the clock by taking ten million samples
-// took 755 ms on the machine these notes were written on, roughly twenty times
-// the cost of a complete comparison run. The result is cached for the lifetime
-// of the process, so it is a startup cost rather than a per-call one.
+// The search itself is cheap, a few hundred microseconds in practice. The first
+// call in a process additionally pays for [GetSampleTimePrecision], which probes
+// the clock until its minimum stops improving, about 4 ms on the machine these
+// notes were written on. That result is cached for the lifetime of the process,
+// so it is a one-time startup cost rather than a per-call one.
 //
 // A failure to reach the target within MaxInnerLoops means a batch did not get
 // longer as the batch size grew. In Go the usual explanation is a [Batch]

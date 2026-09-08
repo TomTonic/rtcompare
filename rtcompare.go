@@ -56,7 +56,22 @@ const DefaultResamples uint64 = 5_000
 //
 //   - relativeGains: relative improvement thresholds to evaluate (e.g. 0.05 means
 //     "A is at least 5% smaller than B"). If nil or empty, the function evaluates
-//     a single relative gain at 0.0 (is A smaller than B at all?).
+//     a single relative gain at 0.0.
+//
+//     A threshold of 0.0 deserves a word of warning, because it is the one place
+//     where the inclusive comparison bites. Every threshold is evaluated as
+//     `delta >= t`, so at t = 0 the question is "is A at least as small as B",
+//     not "is A smaller". Replicates in which both medians come out exactly equal
+//     count towards the confidence.
+//
+//     With quantized inputs such as timings, that is not a rare corner case. A
+//     measurement is an integer count of clock ticks divided by a batch size, so
+//     distinct measurements collapse onto identical values: at this package's
+//     default calibration target, an ordinary run tied in about 15% of
+//     replicates, lifting the confidence at t = 0 by half that. Ask for a
+//     threshold above zero if you mean strictly faster, or shrink the
+//     quantization; see CollectOptions.MaxQuantizationError and the tie rate
+//     reported by ValidateHarness.
 //
 //     Negative values in `relativeGains` are allowed and are interpreted as
 //     tolerated relative *slowdowns* of A vs. B. Concretely, a threshold `t < 0`
