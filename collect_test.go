@@ -1,0 +1,356 @@
+package rtcompare
+
+import (
+	"math"
+	"runtime/debug"
+	"strings"
+	"testing"
+)
+
+// collectSink absorbs results of measured work so the compiler cannot eliminate it.
+var collectSink uint64
+
+// noopCandidate returns a candidate that does nothing, for option-validation tests.
+func noopCandidate() Candidate {
+	return Candidate{Batch: func(n uint64) {}}
+}
+
+// recorder builds a pair of candidates that append their label to a shared log
+// every time they are invoked, so tests can assert on measurement order.
+func recorder() (log *[]string, a, b Candidate) {
+	l := make([]string, 0, 256)
+	log = &l
+	a = Candidate{Name: "A", Batch: func(n uint64) { *log = append(*log, "A") }}
+	b = Candidate{Name: "B", Batch: func(n uint64) { *log = append(*log, "B") }}
+	return log, a, b
+}
+
+func TestCollectRejectsNilBatch(t *testing.T) {
+	opt := CollectOptions{InnerLoops: 1}
+	_, _, err := Collect(Candidate{Name: "mine"}, noopCandidate(), opt)
+	if err == nil {
+		t.Fatal("expected error for nil Batch in candidate A, got nil")
+	}
+	if !strings.Contains(err.Error(), `A ("mine")`) {
+		t.Errorf("error should identify the candidate by position and name, got %q", err.Error())
+	}
+	if _, _, err := Collect(noopCandidate(), Candidate{}, opt); err == nil {
+		t.Error("expected error for nil Batch in candidate B, got nil")
+	}
+}
+
+func TestCollectRejectsBadOptions(t *testing.T) {
+	cases := []struct {
+		name string
+		opt  CollectOptions
+		want string
+	}{
+		{"negative Repeats", CollectOptions{Repeats: -1, InnerLoops: 1}, "Repeats must not be negative"},
+		{"too few Repeats", CollectOptions{Repeats: 10, InnerLoops: 1}, "at least"},
+		{"negative Warmup", CollectOptions{Repeats: 11, InnerLoops: 1, Warmup: -1}, "SkipWarmup"},
+		{"unknown Order", CollectOptions{Repeats: 11, InnerLoops: 1, Order: Order(42)}, "Order"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, err := Collect(noopCandidate(), noopCandidate(), c.opt)
+			if err == nil {
+				t.Fatalf("expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %q does not mention %q", err.Error(), c.want)
+			}
+		})
+	}
+}
+
+func TestCollectRepeatsDefaultAndExplicit(t *testing.T) {
+	a, b, err := Collect(noopCandidate(), noopCandidate(), CollectOptions{InnerLoops: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(a) != DefaultRepeats || len(b) != DefaultRepeats {
+		t.Errorf("expected %d samples each, got %d and %d", DefaultRepeats, len(a), len(b))
+	}
+
+	a, b, err = Collect(noopCandidate(), noopCandidate(), CollectOptions{Repeats: 17, InnerLoops: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(a) != 17 || len(b) != 17 {
+		t.Errorf("expected 17 samples each, got %d and %d", len(a), len(b))
+	}
+}
+
+func TestCollectPassesInnerLoopsToBatch(t *testing.T) {
+	const want = uint64(1234)
+	seen := make(map[uint64]int)
+	c := Candidate{Batch: func(n uint64) { seen[n]++ }}
+	if _, _, err := Collect(c, c, CollectOptions{Repeats: 11, InnerLoops: want}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("batch was called with varying n: %v", seen)
+	}
+	if _, ok := seen[want]; !ok {
+		t.Errorf("batch never received n=%d, saw %v", want, seen)
+	}
+}
+
+func TestCollectOrderABBAAlternates(t *testing.T) {
+	log, a, b := recorder()
+	_, _, err := Collect(a, b, CollectOptions{Repeats: 12, InnerLoops: 1, Order: OrderABBA, SkipWarmup: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.Join(*log, "")
+	want := "ABBAABBAABBAABBAABBAABBA" // 12 repeats, order flipping every repeat
+	if got != want {
+		t.Errorf("ABBA order mismatch:\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestCollectOrderSequentialAlwaysAFirst(t *testing.T) {
+	log, a, b := recorder()
+	_, _, err := Collect(a, b, CollectOptions{Repeats: 11, InnerLoops: 1, Order: OrderSequential, SkipWarmup: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i := 0; i < len(*log); i += 2 {
+		if (*log)[i] != "A" || (*log)[i+1] != "B" {
+			t.Fatalf("expected strict A,B pairs, got %v at index %d", (*log)[i:i+2], i)
+		}
+	}
+}
+
+func TestCollectOrderRandomIsReproducibleBySeed(t *testing.T) {
+	run := func(seed uint64) string {
+		log, a, b := recorder()
+		_, _, err := Collect(a, b, CollectOptions{
+			Repeats: 51, InnerLoops: 1, Order: OrderRandom, Seed: seed, SkipWarmup: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return strings.Join(*log, "")
+	}
+	first, second := run(0xC0FFEE), run(0xC0FFEE)
+	if first != second {
+		t.Errorf("same seed produced different orders:\n%s\n%s", first, second)
+	}
+	if other := run(0xBEEF); other == first {
+		t.Error("different seeds produced identical orders, seed appears to be ignored")
+	}
+	if !strings.Contains(first, "BA") {
+		t.Error("random order never put B first, does not look randomized")
+	}
+}
+
+func TestCollectWarmupCounts(t *testing.T) {
+	count := func() (*int, Candidate) {
+		n := 0
+		return &n, Candidate{Batch: func(uint64) { n++ }}
+	}
+
+	// Warmup: 0 selects DefaultWarmup, so each candidate runs Repeats+DefaultWarmup times.
+	na, ca := count()
+	nb, cb := count()
+	if _, _, err := Collect(ca, cb, CollectOptions{Repeats: 11, InnerLoops: 1}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := 11 + DefaultWarmup; *na != want || *nb != want {
+		t.Errorf("default warm-up: expected %d calls each, got %d and %d", want, *na, *nb)
+	}
+
+	// Explicit warm-up count.
+	na, ca = count()
+	nb, cb = count()
+	if _, _, err := Collect(ca, cb, CollectOptions{Repeats: 11, InnerLoops: 1, Warmup: 3}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if *na != 14 || *nb != 14 {
+		t.Errorf("warm-up 3: expected 14 calls each, got %d and %d", *na, *nb)
+	}
+
+	// SkipWarmup wins over an explicit count.
+	na, ca = count()
+	nb, cb = count()
+	if _, _, err := Collect(ca, cb, CollectOptions{Repeats: 11, InnerLoops: 1, Warmup: 3, SkipWarmup: true}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if *na != 11 || *nb != 11 {
+		t.Errorf("SkipWarmup: expected 11 calls each, got %d and %d", *na, *nb)
+	}
+}
+
+func TestCollectSetupTeardownOrderAndCount(t *testing.T) {
+	var log []string
+	c := Candidate{
+		Setup:    func() { log = append(log, "setup") },
+		Batch:    func(uint64) { log = append(log, "batch") },
+		Teardown: func() { log = append(log, "teardown") },
+	}
+	other := noopCandidate()
+
+	const repeats = 11
+	if _, _, err := Collect(c, other, CollectOptions{Repeats: repeats, InnerLoops: 1, SkipWarmup: true}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(log) != 3*repeats {
+		t.Fatalf("expected %d lifecycle events, got %d", 3*repeats, len(log))
+	}
+	for i := 0; i < len(log); i += 3 {
+		got := strings.Join(log[i:i+3], ",")
+		if got != "setup,batch,teardown" {
+			t.Fatalf("lifecycle out of order at event %d: %s", i, got)
+		}
+	}
+}
+
+func TestCollectSetupTeardownRunDuringWarmup(t *testing.T) {
+	setups, teardowns := 0, 0
+	c := Candidate{
+		Setup:    func() { setups++ },
+		Batch:    func(uint64) {},
+		Teardown: func() { teardowns++ },
+	}
+	if _, _, err := Collect(c, noopCandidate(), CollectOptions{Repeats: 11, InnerLoops: 1, Warmup: 2}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := 13; setups != want || teardowns != want {
+		t.Errorf("warm-up should exercise the same lifecycle: expected %d setups/teardowns, got %d/%d", want, setups, teardowns)
+	}
+}
+
+func TestCollectSetupWorkIsNotMeasured(t *testing.T) {
+	// A candidate whose Setup burns time while its Batch does nothing must not
+	// have that time attributed to it.
+	burn := func() {
+		rng := NewDPRNG(0x99)
+		var acc uint64
+		for range 200_000 {
+			acc ^= rng.Uint64()
+		}
+		collectSink ^= acc
+	}
+	withSetup := Candidate{Name: "setup-heavy", Setup: burn, Batch: func(uint64) {}}
+	plain := Candidate{Name: "plain", Batch: func(uint64) {}}
+
+	sa, sb, err := Collect(withSetup, plain, CollectOptions{Repeats: 21, InnerLoops: 1000})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	medSetup, medPlain := Median(sa), Median(sb)
+
+	// Both batches are empty, so both medians must stay near zero. The burn loop
+	// takes well over a microsecond; if it were measured it would dominate.
+	if medSetup > medPlain+1.0 {
+		t.Errorf("Setup work leaked into the measurement: setup-heavy=%.4f ns/op, plain=%.4f ns/op", medSetup, medPlain)
+	}
+}
+
+func TestCollectDisableGCRestoresPreviousSetting(t *testing.T) {
+	before := debug.SetGCPercent(123)
+	defer debug.SetGCPercent(before)
+
+	_, _, err := Collect(noopCandidate(), noopCandidate(), CollectOptions{
+		Repeats: 11, InnerLoops: 1, DisableGC: true, GCBetween: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	restored := debug.SetGCPercent(123)
+	if restored != 123 {
+		t.Errorf("DisableGC did not restore the previous GC percentage, found %d", restored)
+	}
+}
+
+func TestCollectDisableGCIsOffDuringRun(t *testing.T) {
+	var during int
+	probe := Candidate{Batch: func(uint64) {
+		// SetGCPercent returns the current value; -1 means the collector is off.
+		current := debug.SetGCPercent(-1)
+		during = current
+	}}
+	before := debug.SetGCPercent(200)
+	defer debug.SetGCPercent(before)
+
+	if _, _, err := Collect(probe, noopCandidate(), CollectOptions{
+		Repeats: 11, InnerLoops: 1, DisableGC: true, SkipWarmup: true,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if during != -1 {
+		t.Errorf("expected the collector to be disabled inside the run, saw GC percent %d", during)
+	}
+}
+
+func TestCollectProducesUsableSamples(t *testing.T) {
+	work := func(mult uint64) Candidate {
+		return Candidate{Batch: func(n uint64) {
+			rng := NewDPRNG(0x12345)
+			var acc uint64
+			for range n * mult {
+				acc ^= rng.Uint64()
+			}
+			collectSink ^= acc
+		}}
+	}
+
+	sa, sb, err := Collect(work(1), work(10), CollectOptions{Repeats: 21, InnerLoops: 2000})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for i, v := range sa {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+			t.Fatalf("sample A[%d] is not a positive finite duration: %v", i, v)
+		}
+	}
+	for i, v := range sb {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+			t.Fatalf("sample B[%d] is not a positive finite duration: %v", i, v)
+		}
+	}
+
+	medFast, medSlow := Median(sa), Median(sb)
+	if medFast >= medSlow {
+		t.Errorf("candidate doing 1x work (%.2f ns/op) should beat 10x work (%.2f ns/op)", medFast, medSlow)
+	}
+
+	// The samples must be directly consumable by the comparison API.
+	if _, err := CompareSamplesDefault(sa, sb, []float64{0.0, 0.5}); err != nil {
+		t.Errorf("Collect output rejected by CompareSamplesDefault: %v", err)
+	}
+}
+
+func TestOrderString(t *testing.T) {
+	cases := map[Order]string{
+		OrderABBA:       "ABBA",
+		OrderRandom:     "Random",
+		OrderSequential: "Sequential",
+		Order(42):       "Order(42)",
+	}
+	for o, want := range cases {
+		if got := o.String(); got != want {
+			t.Errorf("Order(%d).String() = %q, want %q", int(o), got, want)
+		}
+	}
+}
+
+func TestOrderABBAIsZeroValue(t *testing.T) {
+	var o Order
+	if o != OrderABBA {
+		t.Errorf("zero value of Order is %v, expected OrderABBA so the safe order is the default", o)
+	}
+}
+
+func TestCandidateLabel(t *testing.T) {
+	if got := (Candidate{}).label("A"); got != "A" {
+		t.Errorf("unnamed candidate label = %q, want %q", got, "A")
+	}
+	if got := (Candidate{Name: "quick"}).label("B"); got != `B ("quick")` {
+		t.Errorf("named candidate label = %q, want %q", got, `B ("quick")`)
+	}
+}
