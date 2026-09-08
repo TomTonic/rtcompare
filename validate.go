@@ -14,6 +14,12 @@ const DefaultValidationRuns = 10
 // signals against when ValidationOptions.Level is left at zero.
 const DefaultValidationLevel = 0.95
 
+// DriftLevel is the significance level at which [ValidateHarness] counts a run
+// as having drifted. It is a conventional 5%: on data with no trend the drift
+// test fires this often by construction, so DriftRate is only interesting when
+// it sits well above this.
+const DriftLevel = 0.05
+
 // HarnessValidation reports what repeated A/A experiments revealed about a
 // measurement setup: the same candidate measured as both A and B, under exactly
 // the options a real comparison would use.
@@ -97,6 +103,29 @@ type HarnessValidation struct {
 	// Level is the confidence level FalseSignalRate was judged against.
 	Level float64
 
+	// DriftRate is the fraction of runs in which at least one of the two sample
+	// series showed a significant trend across the run, as judged by
+	// [DetectDrift] at [DriftLevel].
+	//
+	// A trend means the machine did not hold still while it was being measured,
+	// which is the one situation where measurement order turns into an apparent
+	// difference between candidates. It is also invisible to the bootstrap,
+	// which treats the samples as an unordered bag. On a quiet machine this
+	// should sit near DriftLevel itself, that being the rate at which the test
+	// fires on calm data by construction; substantially above it means runs are
+	// long enough for the machine to change during them.
+	//
+	// Note that DetectDrift looks for a monotone trend but will also respond to
+	// strong short-range correlation between neighbouring batches. Both violate
+	// the exchangeability the bootstrap assumes, so either is worth knowing
+	// about, but this figure does not distinguish them.
+	DriftRate float64
+
+	// MedianDriftShift is the median relative shift between the first and second
+	// half of a run's samples, across the runs and both series. It is the size
+	// of the drift where DriftRate is its prevalence.
+	MedianDriftShift float64
+
 	// Deltas and Confidences hold the per-run values the summary is built from,
 	// in the order the runs were performed. Their sequence is worth a look:
 	// a trend across them is drift rather than noise.
@@ -124,10 +153,12 @@ func (v HarnessValidation) String() string {
 			"  mean confidence    %.3f (0.500 expected, ties split)\n"+
 			"  median confidence  %.3f\n"+
 			"  tied replicates    %.1f%%\n"+
+			"  drifting runs      %.1f%% (shift %+.3f%%)\n"+
 			"  false signals      %.1f%% at level %.2f (%.1f%% expected)",
 		v.Runs, v.InnerLoops,
 		v.NoiseFloor*100, v.TypicalNoise*100,
 		v.MeanConfidence, v.MedianConfidence, v.TieRate*100,
+		v.DriftRate*100, v.MedianDriftShift*100,
 		v.FalseSignalRate*100, v.Level, 2*(1-v.Level)*100)
 }
 
@@ -224,6 +255,8 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 	deltas := make([]float64, 0, opt.Runs)
 	confidences := make([]float64, 0, opt.Runs)
 	tieRates := make([]float64, 0, opt.Runs)
+	driftShifts := make([]float64, 0, 2*opt.Runs)
+	driftedRuns := 0
 
 	for run := range opt.Runs {
 		sampleA, sampleB, err := Collect(c, c, co)
@@ -247,6 +280,26 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 		confBA := BootstrapConfidence(sampleB, sampleA, []float64{0.0}, opt.Resamples, 0)[0.0]
 		confidences = append(confidences, (confAB+1-confBA)/2)
 		tieRates = append(tieRates, math.Max(0, confAB+confBA-1))
+
+		// Drift is a property of the order the samples arrived in, which the
+		// bootstrap above has already discarded. Both series are examined; a run
+		// counts as drifting if either did.
+		drifted := false
+		for _, series := range [][]float64{sampleA, sampleB} {
+			d, err := DetectDrift(series)
+			if err != nil {
+				// Too few samples to look for a trend, or a non-finite value.
+				// Neither is a reason to fail the validation.
+				continue
+			}
+			driftShifts = append(driftShifts, math.Abs(d.RelativeShift))
+			if d.Drifted(DriftLevel) {
+				drifted = true
+			}
+		}
+		if drifted {
+			driftedRuns++
+		}
 	}
 
 	absDeltas := make([]float64, len(deltas))
@@ -273,7 +326,18 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 		TieRate:          Median(tieRates),
 		FalseSignalRate:  float64(falseSignals) / float64(len(confidences)),
 		Level:            opt.Level,
+		DriftRate:        float64(driftedRuns) / float64(opt.Runs),
+		MedianDriftShift: medianOrZero(driftShifts),
 		Deltas:           deltas,
 		Confidences:      confidences,
 	}, nil
+}
+
+// medianOrZero is Median with an empty input mapping to zero rather than to the
+// zero Median itself returns, so that callers need not distinguish them.
+func medianOrZero(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	return Median(xs)
 }

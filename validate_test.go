@@ -239,3 +239,36 @@ func TestValidateHarnessReportsTieRate(t *testing.T) {
 	// suggest the tie accounting is not wired up.
 	t.Logf("tie rate %.1f%%, mean confidence %.3f", v.TieRate*100, v.MeanConfidence)
 }
+
+func TestValidateHarnessReportsDrift(t *testing.T) {
+	v, err := ValidateHarness(steadyCandidate(2), quickValidation(8))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Log("\n" + v.String())
+
+	if v.DriftRate < 0 || v.DriftRate > 1 || math.IsNaN(v.DriftRate) {
+		t.Errorf("drift rate %v outside [0,1]", v.DriftRate)
+	}
+	if v.MedianDriftShift < 0 {
+		t.Errorf("median drift shift should be an absolute value, got %v", v.MedianDriftShift)
+	}
+	if !strings.Contains(v.String(), "drifting runs") {
+		t.Errorf("String() should report the drift rate:\n%s", v.String())
+	}
+}
+
+func TestValidateHarnessDriftRateIsAFraction(t *testing.T) {
+	// A run counts once even though two series are examined, so the rate can
+	// never exceed one.
+	v, err := ValidateHarness(steadyCandidate(1), quickValidation(5))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v.DriftRate > 1 {
+		t.Errorf("drift rate %v exceeds 1; runs are probably being double counted", v.DriftRate)
+	}
+	if got := v.DriftRate * 5; got != math.Trunc(got) {
+		t.Errorf("drift rate %v is not a multiple of 1/runs, so it is not counting whole runs", v.DriftRate)
+	}
+}
