@@ -371,7 +371,10 @@ func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 // bootstrapConfidence is the shared implementation of BootstrapConfidence and
 // BlockBootstrapConfidence. A blockLength of one gives the ordinary bootstrap.
 func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, blockLength int, prngSeed uint64) (confidenceForThreshold map[float64]float64) {
-	if blockLength == 0 {
+	// Zero asks for the automatic length; anything negative is a caller error
+	// with no sensible reading, so it takes the same route rather than reaching
+	// blockSample as a nonsensical length.
+	if blockLength <= 0 {
 		blockLength = AutoBlockLength(max(len(A), len(B)))
 	}
 

@@ -78,12 +78,23 @@ func AutoBlockLength(n int) int {
 // mildly over-dispersed, which is why the automatic length is worth preferring
 // over a guessed one.
 //
-// blockLength of zero selects [AutoBlockLength]. A blockLength of one is the
-// ordinary bootstrap exactly, drawing the same values in the same order, so
-// there is no reason to pass it deliberately. Blocks are overlapping and drawn
-// uniformly from every valid start position, which is the moving block bootstrap
-// of Künsch (1989); the last block of a replicate is truncated so that every
+// blockLength of zero selects [AutoBlockLength], and so does any negative
+// value, which has no sensible reading. A blockLength of one is the ordinary
+// bootstrap exactly, drawing the same values in the same order, so there is no
+// reason to pass it deliberately. Blocks are overlapping and drawn uniformly
+// from every valid start position, which is the moving block bootstrap of
+// Künsch (1989); the last block of a replicate is truncated so that every
 // replicate has exactly as many observations as the input.
+//
+// A blockLength longer than half the input is reduced to half. A block as long
+// as the input has only one start position, so every replicate would reproduce
+// the input exactly, the resampled difference would be a constant, and the
+// confidence would come out as exactly 0 or 1 — indistinguishable from
+// certainty, and wrong. Halving guarantees at least two blocks per replicate.
+// The clamp is applied to each input separately, so inputs of different lengths
+// are each handled on their own terms. There is no good reason to approach that
+// bound in any case: long blocks cost variance, and [AutoBlockLength] stays far
+// below it.
 //
 // All other behaviour, including threshold handling and the meaning of prngSeed,
 // is that of [BootstrapConfidence].
@@ -104,8 +115,18 @@ func blockSample(xs []float64, blockLength int, next func(uint32) uint32) []floa
 	if n == 0 {
 		return sample
 	}
-	if blockLength < 1 || blockLength > n {
-		blockLength = n
+	// Clamp to a length that can still produce variation between replicates.
+	// A block as long as the input has exactly one start position, so every
+	// replicate would be the input itself and the resampled statistic would be
+	// a constant: the confidence would come out as exactly 0 or 1 and look like
+	// certainty rather than the artefact it is. Half the input guarantees at
+	// least two blocks per replicate, which is also the usual requirement for
+	// the moving block bootstrap to say anything.
+	if blockLength < 1 {
+		blockLength = 1
+	}
+	if maxBlock := max(1, n/2); blockLength > maxBlock {
+		blockLength = maxBlock
 	}
 	starts := uint32(n - blockLength + 1)
 	for len(sample) < n {

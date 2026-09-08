@@ -8,7 +8,56 @@ import (
 
 // DefaultValidationRuns is the number of A/A experiments [ValidateHarness]
 // performs when ValidationOptions.Runs is left at zero.
-const DefaultValidationRuns = 10
+//
+// It is sized for the rates the report quotes, not for the noise floor, which
+// needs far fewer runs. FalseSignalRate and DriftRate are proportions estimated
+// from Runs observations, so their standard error is sqrt(p(1-p)/Runs). At the
+// nominal 10% that FalseSignalRate is compared against, ten runs give a
+// standard error of 9.5 percentage points, which is as large as the quantity
+// being estimated: a perfectly calibrated setup would print 0.0% about 35% of
+// the time and 20% or more about 26% of the time, and neither number would mean
+// anything. Forty runs bring that to 4.7 points, which is enough to tell a
+// calibrated setup from a badly broken one, though still not enough to resolve
+// small departures.
+//
+// The cost is linear in Runs and small in absolute terms. On the machine these
+// notes were written on, validating a candidate calibrated to 48 microsecond
+// batches took 0.76 s at ten runs and 3.03 s at forty. Validation is a thing
+// done once per setup, not once per comparison, so that is a good trade.
+const DefaultValidationRuns = 40
+
+// NoiseFloorQuantile is the quantile of the observed A/A differences that
+// HarnessValidation.NoiseFloor reports.
+//
+// The floor used to be the maximum, which turned out to be the wrong statistic
+// for the job. A sample maximum has no population value to converge on: it
+// grows with the number of runs, without limit. Measured here, eight repetitions
+// per row, the same candidate throughout:
+//
+//	Runs    max (old floor)         90th percentile
+//	   5              0.779%                  0.493%
+//	  10              0.208%                  0.169%
+//	  20              0.230%                  0.144%
+//	  40              0.313%                  0.165%
+//	  80              0.356%                  0.166%
+//
+// The max climbs steadily from twenty runs onward while the quantile settles;
+// an independent earlier run reproduced the same climb, 0.236% to 0.491% over
+// Runs 5 to 40. The five-run row is unreliable in both columns, one repetition
+// there having caught a disturbed machine. The spread across repetitions tells
+// the same story: at eighty runs the max ranged over 0.168% to 0.834% while the
+// quantile ranged over 0.164% to 0.168%, a band forty times tighter.
+//
+// That mattered in practice, because [HarnessValidation.Resolves] compares
+// against this number. With a maximum, validating more carefully raised the bar,
+// so the natural response to an uncertain result — run it again with more runs —
+// made the gate stricter rather than better informed. A quantile converges, so
+// the gate stops moving once there are enough runs to estimate it.
+//
+// The price is that this is no longer an observed bound. Roughly one A/A run in
+// ten exceeds it, by construction. HarnessValidation.MaxObservedNoise still
+// reports the largest difference actually seen, for anyone who wants it.
+const NoiseFloorQuantile = 0.90
 
 // DefaultValidationLevel is the confidence level [ValidateHarness] judges false
 // signals against when ValidationOptions.Level is left at zero.
@@ -35,13 +84,26 @@ type HarnessValidation struct {
 	// It is fixed across runs so that they are comparable.
 	InnerLoops uint64
 
-	// NoiseFloor is the largest relative difference observed between the two
-	// sample sets of identical code, as a fraction. It is the practical
-	// resolution limit of the setup: a real comparison reporting less than this
-	// has measured nothing. Being a maximum over Runs, it is itself a noisy and
-	// deliberately conservative statistic; see TypicalNoise for the middle of
-	// the distribution.
+	// NoiseFloor is the [NoiseFloorQuantile] quantile of the absolute relative
+	// differences observed between the two sample sets of identical code, as a
+	// fraction. It is the practical resolution limit of the setup: a real
+	// comparison reporting less than this has measured nothing.
+	//
+	// It is a quantile rather than the maximum because a maximum has no value to
+	// converge on and grows with Runs, which made the gate stricter the more
+	// carefully a setup was validated. See NoiseFloorQuantile for the
+	// measurements. The consequence to keep in mind is that this is not a bound:
+	// about one A/A run in ten exceeds it by construction, so clearing it is
+	// evidence rather than proof. See MaxObservedNoise for the largest
+	// difference actually seen and TypicalNoise for the middle of the
+	// distribution.
 	NoiseFloor float64
+
+	// MaxObservedNoise is the largest absolute relative difference seen across
+	// the runs. It is what NoiseFloor used to report. Read it as the worst case
+	// this validation happened to catch, remembering that it grows with Runs and
+	// so describes the length of the validation as much as the setup.
+	MaxObservedNoise float64
 
 	// TypicalNoise is the median absolute relative difference across runs.
 	TypicalNoise float64
@@ -59,7 +121,16 @@ type HarnessValidation struct {
 	MedianConfidence float64
 
 	// TieRate is the share of bootstrap replicates in which both resampled
-	// medians came out exactly equal, averaged over the runs.
+	// medians came out exactly equal, taken as the median across the runs.
+	//
+	// The median rather than the mean, because of how the per-run figure is
+	// obtained. It is recovered as confAB + confBA - 1 from two independent
+	// bootstrap runs, so it carries the Monte Carlo error of both and can come
+	// out slightly negative when the true rate is near zero. Clamping those to
+	// zero would bias a mean upwards by a few tenths of a point on a setup that
+	// ties hardly at all; the median is unaffected, since half the estimates
+	// land on either side. The cost is that a true rate below the Monte Carlo
+	// noise reports as zero, which is the honest answer at that resolution.
 	//
 	// Timing measurements are quantized, so identical values are common and ties
 	// with them. One A/A run here produced 102 samples holding only 35 distinct
@@ -121,9 +192,15 @@ type HarnessValidation struct {
 	// about, but this figure does not distinguish them.
 	DriftRate float64
 
-	// MedianDriftShift is the median relative shift between the first and second
-	// half of a run's samples, across the runs and both series. It is the size
-	// of the drift where DriftRate is its prevalence.
+	// MedianDriftShift is the median *absolute* relative shift between the first
+	// and second half of a run's samples, across the runs and both series. It is
+	// the size of the drift where DriftRate is its prevalence.
+	//
+	// Absolute, so it does not matter whether a run sped up or slowed down; both
+	// are the machine failing to hold still, and averaging them signed would let
+	// them cancel. It is therefore never negative, and it carries no direction.
+	// Read DriftReport.RelativeShift from [DetectDrift] on an individual series
+	// if the direction matters.
 	MedianDriftShift float64
 
 	// Autocorrelation is the median lag-1 autocorrelation of the sample series,
@@ -155,10 +232,18 @@ type HarnessValidation struct {
 // than the noise this validation observed, and so whether the setup can tell it
 // apart from nothing at all. The sign is ignored.
 //
-// This is a necessary condition, not a sufficient one. Clearing the noise floor
-// says the difference is not obviously an artefact of the harness; it says
-// nothing about whether it is caused by the code rather than by the compiler's
-// layout choices or the machine's mood.
+// This is a necessary condition, not a sufficient one, in two separate ways.
+// Clearing the floor says the difference is not obviously an artefact of the
+// harness; it says nothing about whether it is caused by the code rather than by
+// the compiler's layout choices or the machine's mood. And the floor is the
+// [NoiseFloorQuantile] quantile rather than a bound, so about one A/A run in ten
+// produces a difference that would clear it. Treat a result just above the floor
+// as unresolved and a result well above it as resolved.
+//
+// The floor is also measured on one candidate against itself. Two genuinely
+// different candidates can be noisier than that, since they need not allocate
+// alike or occupy the cache alike, so validate both and use the worse of the two
+// floors.
 func (v HarnessValidation) Resolves(relativeDifference float64) bool {
 	return math.Abs(relativeDifference) > v.NoiseFloor
 }
@@ -167,15 +252,15 @@ func (v HarnessValidation) Resolves(relativeDifference float64) bool {
 func (v HarnessValidation) String() string {
 	return fmt.Sprintf(
 		"A/A validation over %d runs at %d inner loops:\n"+
-			"  noise floor        %+.3f%% (typical %+.3f%%)\n"+
+			"  noise floor        %.3f%% (typical %.3f%%, worst seen %.3f%%)\n"+
 			"  mean confidence    %.3f (0.500 expected, ties split)\n"+
 			"  median confidence  %.3f\n"+
 			"  tied replicates    %.1f%%\n"+
-			"  drifting runs      %.1f%% (shift %+.3f%%)\n"+
+			"  drifting runs      %.1f%% (median |shift| %.3f%%)\n"+
 			"  autocorrelation    %+.3f (blocks worthwhile above ~0.2)\n"+
 			"  false signals      %.1f%% at level %.2f (%.1f%% expected)",
 		v.Runs, v.InnerLoops,
-		v.NoiseFloor*100, v.TypicalNoise*100,
+		v.NoiseFloor*100, v.TypicalNoise*100, v.MaxObservedNoise*100,
 		v.MeanConfidence, v.MedianConfidence, v.TieRate*100,
 		v.DriftRate*100, v.MedianDriftShift*100, v.Autocorrelation,
 		v.FalseSignalRate*100, v.Level, 2*(1-v.Level)*100)
@@ -221,15 +306,26 @@ type ValidationOptions struct {
 // to well over one, carried with high confidence. Only an A/A experiment
 // exposes that.
 //
-// The cost is Runs times that of one comparison, plus one calibration.
+// The cost is Runs times one [Collect] plus one calibration, and rather more
+// bootstrap work than a single comparison: each run resamples twice, once in
+// each direction, because splitting ties needs the confidence both ways. The
+// resampling dominates. Measured on a candidate calibrated to 48 microsecond
+// batches, the whole validation took 0.76 s at ten runs and 3.03 s at forty, of
+// which the measurement itself was under a tenth.
 //
 // A worked use, and the reason the API exists: measure the noise floor first,
 // then require a real result to clear it.
 //
-//	v, err := rtcompare.ValidateHarness(fast, rtcompare.ValidationOptions{Collect: opts})
+// Validate both candidates, not just one: they need not be equally well
+// behaved, and a comparison is only as trustworthy as the worse of them.
+//
+//	va, err := rtcompare.ValidateHarness(fast, rtcompare.ValidationOptions{Collect: opts})
+//	vb, err := rtcompare.ValidateHarness(slow, rtcompare.ValidationOptions{Collect: opts})
+//	floor := max(va.NoiseFloor, vb.NoiseFloor)
+//
 //	sa, sb, err := rtcompare.Collect(fast, slow, opts)
 //	observed := 1 - rtcompare.Median(sa)/rtcompare.Median(sb)
-//	if !v.Resolves(observed) {
+//	if math.Abs(observed) <= floor {
 //	    // The difference is within what this machine invents on its own.
 //	}
 func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, error) {
@@ -323,10 +419,13 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 		}
 	}
 
+	// Sorted so that the floor can be read off as a quantile. This is a private
+	// copy, so the caller's Deltas keep the order the runs were performed in.
 	absDeltas := make([]float64, len(deltas))
 	for i, d := range deltas {
 		absDeltas[i] = math.Abs(d)
 	}
+	slices.Sort(absDeltas)
 
 	var sum float64
 	falseSignals := 0
@@ -340,7 +439,8 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 	return HarnessValidation{
 		Runs:             opt.Runs,
 		InnerLoops:       co.InnerLoops,
-		NoiseFloor:       slices.Max(absDeltas),
+		NoiseFloor:       quantileOfSorted(absDeltas, NoiseFloorQuantile),
+		MaxObservedNoise: absDeltas[len(absDeltas)-1],
 		TypicalNoise:     Median(absDeltas),
 		MeanConfidence:   sum / float64(len(confidences)),
 		MedianConfidence: Median(confidences),

@@ -2,6 +2,7 @@ package rtcompare
 
 import (
 	"math"
+	"slices"
 	"testing"
 )
 
@@ -229,5 +230,78 @@ func TestLag1Autocorrelation(t *testing.T) {
 	}
 	if got := lag1Autocorrelation(alternating); got > -0.9 {
 		t.Errorf("expected a strongly negative lag-1 for an alternating series, got %v", got)
+	}
+}
+
+func TestBlockSampleClampsToHalfTheInput(t *testing.T) {
+	// A block as long as the input leaves one start position, so every
+	// replicate would be the input itself. The clamp has to prevent that, and
+	// the way to see it is that replicates must differ from one another.
+	xs := make([]float64, 40)
+	for i := range xs {
+		xs[i] = float64(i)
+	}
+	rng := NewDPRNG(31337)
+	for _, L := range []int{20, 40, 100, -5, 0} {
+		identical := 0
+		const draws = 100
+		for range draws {
+			s := blockSample(xs, L, rng.UInt32N)
+			if len(s) != len(xs) {
+				t.Fatalf("L=%d: replicate has %d values, want %d", L, len(s), len(xs))
+			}
+			if slices.Equal(s, xs) {
+				identical++
+			}
+		}
+		// Even at the clamped maximum of n/2 there are 21 start positions, so
+		// reproducing the input exactly is rare. Every replicate doing it means
+		// the sampler degenerated.
+		if identical > draws/2 {
+			t.Errorf("L=%d: %d of %d replicates reproduced the input exactly; the sampler degenerated",
+				L, identical, draws)
+		}
+	}
+}
+
+func TestBlockSampleSurvivesTinyInputs(t *testing.T) {
+	// The clamp must not underflow the start count on inputs too short to hold
+	// two blocks.
+	rng := NewDPRNG(11)
+	for n := 1; n <= 4; n++ {
+		xs := make([]float64, n)
+		for i := range xs {
+			xs[i] = float64(i)
+		}
+		for _, L := range []int{-1, 0, 1, n, n + 5} {
+			s := blockSample(xs, L, rng.UInt32N)
+			if len(s) != n {
+				t.Errorf("n=%d, L=%d: replicate has %d values, want %d", n, L, len(s), n)
+			}
+			for _, v := range s {
+				if v < 0 || v >= float64(n) {
+					t.Errorf("n=%d, L=%d: value %v is not one of the inputs", n, L, v)
+				}
+			}
+		}
+	}
+}
+
+func TestBlockBootstrapRejectsDegenerateLengths(t *testing.T) {
+	// Identical distributions, so the confidence must land near 0.5. Before the
+	// clamp, an oversized or negative block length produced exactly 0 or 1,
+	// which reads as certainty.
+	rng := NewDPRNG(12345)
+	a := make([]float64, 101)
+	b := make([]float64, 101)
+	for i := range a {
+		a[i] = 100 + rng.Float64()*10
+		b[i] = 100 + rng.Float64()*10
+	}
+	for _, L := range []int{0, 1, 5, 50, 101, 200, -5} {
+		c := BlockBootstrapConfidence(a, b, []float64{0.0}, 4000, L, 99)[0.0]
+		if c <= 0.02 || c >= 0.98 {
+			t.Errorf("blockLength %d: confidence %.4f on A/A data is degenerate, expected something near 0.5", L, c)
+		}
 	}
 }

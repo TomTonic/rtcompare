@@ -52,6 +52,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/TomTonic/rtcompare"
 )
@@ -72,13 +73,17 @@ func main() {
 	opts := rtcompare.CollectOptions{GCBetween: true}
 
 	// Ask what this machine invents on its own before asking what the
-	// candidates differ by.
-	v, err := rtcompare.ValidateHarness(candidateA,
-		rtcompare.ValidationOptions{Collect: opts, Runs: 10})
-	if err != nil {
-		panic(err)
+	// candidates differ by. Validate both: they need not be equally well
+	// behaved, and the comparison is only as good as the worse of them.
+	floor := 0.0
+	for _, c := range []rtcompare.Candidate{candidateA, candidateB} {
+		v, err := rtcompare.ValidateHarness(c, rtcompare.ValidationOptions{Collect: opts})
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(v)
+		floor = max(floor, v.NoiseFloor)
 	}
-	fmt.Println(v)
 
 	samplesA, samplesB, err := rtcompare.Collect(candidateA, candidateB, opts)
 	if err != nil {
@@ -86,14 +91,14 @@ func main() {
 	}
 
 	observed := 1 - rtcompare.Median(samplesA)/rtcompare.Median(samplesB)
-	if !v.Resolves(observed) {
+	if math.Abs(observed) <= floor {
 		fmt.Printf("%.2f%% is inside the %.2f%% noise floor; nothing resolved\n",
-			observed*100, v.NoiseFloor*100)
+			observed*100, floor*100)
 		return
 	}
 
 	results, err := rtcompare.CompareSamplesDefault(samplesA, samplesB,
-		[]float64{v.NoiseFloor, 0.05, 0.10, 0.20})
+		[]float64{floor, 0.05, 0.10, 0.20})
 	if err != nil {
 		panic(err)
 	}
@@ -148,7 +153,7 @@ Judging:
 
 Checking the measurement itself:
 
-- `ValidateHarness(candidate, ValidationOptions)` — runs a candidate against itself and reports the noise floor, the tie rate, the drift rate and the autocorrelation. `Resolves(difference)` answers whether a result clears that floor.
+- `ValidateHarness(candidate, ValidationOptions)` — runs a candidate against itself and reports the noise floor, the tie rate, the drift rate and the autocorrelation. `Resolves(difference)` answers whether a result clears that floor. The floor is the 90th percentile of the differences observed on identical code, not their maximum, so that it converges as you validate longer instead of growing; roughly one A/A run in ten exceeds it. Validate both candidates and use the worse floor.
 - `DetectDrift(samples)` — tests a sample series for a trend across the run.
 
 Primitives:

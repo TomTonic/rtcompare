@@ -44,7 +44,7 @@ func main() {
 	fmt.Println("Validating the harness against each candidate...")
 	worstFloor, worstAuto := 0.0, 0.0
 	for _, c := range []rtcompare.Candidate{quick, sorting} {
-		v, err := rtcompare.ValidateHarness(c, rtcompare.ValidationOptions{Collect: opts, Runs: 10})
+		v, err := rtcompare.ValidateHarness(c, rtcompare.ValidationOptions{Collect: opts})
 		if err != nil {
 			fail("validating %s: %v", c.Name, err)
 		}

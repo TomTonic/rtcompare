@@ -2,6 +2,7 @@ package rtcompare
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -76,7 +77,10 @@ func TestValidateHarnessReportsPlausibleNoise(t *testing.T) {
 		t.Errorf("noise floor must be an absolute value, got %v", v.NoiseFloor)
 	}
 	if v.TypicalNoise > v.NoiseFloor {
-		t.Errorf("typical noise %v exceeds the floor %v, which is a maximum", v.TypicalNoise, v.NoiseFloor)
+		t.Errorf("typical noise %v exceeds the floor %v, which is a higher quantile", v.TypicalNoise, v.NoiseFloor)
+	}
+	if v.NoiseFloor > v.MaxObservedNoise {
+		t.Errorf("floor %v exceeds the largest difference seen %v", v.NoiseFloor, v.MaxObservedNoise)
 	}
 	// Identical code cannot genuinely differ. Anything beyond a few percent
 	// means the machine is too disturbed for the measurement to mean anything,
@@ -169,11 +173,11 @@ func TestValidateHarnessCentersOnHalf(t *testing.T) {
 
 func TestHarnessValidationString(t *testing.T) {
 	v := HarnessValidation{
-		Runs: 4, InnerLoops: 1000, NoiseFloor: 0.012, TypicalNoise: 0.004,
+		Runs: 4, InnerLoops: 1000, NoiseFloor: 0.012, TypicalNoise: 0.004, MaxObservedNoise: 0.019,
 		MeanConfidence: 0.51, MedianConfidence: 0.49, FalseSignalRate: 0.25, Level: 0.95,
 	}
 	s := v.String()
-	for _, want := range []string{"4 runs", "1000 inner loops", "noise floor", "mean confidence", "false signals"} {
+	for _, want := range []string{"4 runs", "1000 inner loops", "noise floor", "worst seen", "mean confidence", "false signals"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("String() missing %q:\n%s", want, s)
 		}
@@ -270,5 +274,37 @@ func TestValidateHarnessDriftRateIsAFraction(t *testing.T) {
 	}
 	if got := v.DriftRate * 5; got != math.Trunc(got) {
 		t.Errorf("drift rate %v is not a multiple of 1/runs, so it is not counting whole runs", v.DriftRate)
+	}
+}
+
+func TestNoiseFloorIsAQuantileNotAMaximum(t *testing.T) {
+	// The floor must sit at the requested quantile of the observed differences,
+	// which is what stops it from growing with Runs. Checked against the recorded
+	// per-run deltas, so the relationship is verified rather than assumed.
+	v, err := ValidateHarness(steadyCandidate(1), quickValidation(12))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	abs := make([]float64, len(v.Deltas))
+	for i, d := range v.Deltas {
+		abs[i] = math.Abs(d)
+	}
+	slices.Sort(abs)
+
+	if want := quantileOfSorted(abs, NoiseFloorQuantile); v.NoiseFloor != want {
+		t.Errorf("NoiseFloor = %v, want the %v quantile of the deltas, %v", v.NoiseFloor, NoiseFloorQuantile, want)
+	}
+	if want := abs[len(abs)-1]; v.MaxObservedNoise != want {
+		t.Errorf("MaxObservedNoise = %v, want the largest observed %v", v.MaxObservedNoise, want)
+	}
+	if v.NoiseFloor > v.MaxObservedNoise {
+		t.Errorf("a %v quantile cannot exceed the maximum: %v > %v", NoiseFloorQuantile, v.NoiseFloor, v.MaxObservedNoise)
+	}
+
+	// The sort happens on a private copy, so the recorded per-run values must
+	// still be the ones the runs produced, in run order.
+	if len(v.Deltas) != v.Runs {
+		t.Errorf("expected %d recorded deltas, got %d", v.Runs, len(v.Deltas))
 	}
 }

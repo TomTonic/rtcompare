@@ -1,6 +1,7 @@
 package rtcompare
 
 import (
+	"fmt"
 	"math"
 	"runtime/debug"
 	"strings"
@@ -353,4 +354,70 @@ func TestCandidateLabel(t *testing.T) {
 	if got := (Candidate{Name: "quick"}).label("B"); got != `B ("quick")` {
 		t.Errorf("named candidate label = %q, want %q", got, `B ("quick")`)
 	}
+}
+
+// TestCollectResolvesBelowTheClock guards the central claim of this package:
+// that a per-operation difference far smaller than one tick of the system clock
+// is recovered, and recovered with the right magnitude.
+//
+// The two candidates run the same loop body, one over n units and the other over
+// 2n. That construction is what makes the truth known: B's measured region is
+// exactly twice A's, including the loop overhead, so the true relative
+// difference is exactly 0.5 and attenuation cannot shrink it. A candidate pair
+// differing by a called function would not have that property, which is why the
+// test does not use one.
+func TestCollectResolvesBelowTheClock(t *testing.T) {
+	units := func(mult uint64) Candidate {
+		return Candidate{Name: fmt.Sprintf("x%d", mult), Batch: func(n uint64) {
+			var acc uint64
+			for i := uint64(0); i < n*mult; i++ {
+				acc = acc*31 + i
+			}
+			collectSink ^= acc
+		}}
+	}
+
+	cal, err := CalibrateInnerLoops(units(1), CalibrationOptions{GCBetween: true})
+	if err != nil {
+		t.Fatalf("calibration failed: %v", err)
+	}
+	opts := CollectOptions{GCBetween: true, InnerLoops: cal.InnerLoops}
+
+	// Three runs, judged by the middle one, so a single disturbed run on a busy
+	// machine cannot fail the build.
+	deltas := make([]float64, 0, 3)
+	var ma, mb float64
+	for range 3 {
+		sa, sb, err := Collect(units(1), units(2), opts)
+		if err != nil {
+			t.Fatalf("Collect failed: %v", err)
+		}
+		ma, mb = Median(sa), Median(sb)
+		deltas = append(deltas, 1-ma/mb)
+	}
+	delta := Median(deltas)
+
+	tick := float64(cal.ClockPrecision)
+	t.Logf("clock %.0f ns, %d inner loops, batch %.0f ns, quantization %.4f%%",
+		tick, cal.InnerLoops, cal.BatchDuration, cal.QuantizationError*100)
+	t.Logf("A %.4f ns/op, B %.4f ns/op, difference %.4f ns, measured delta %.4f (true 0.5)",
+		ma, mb, mb-ma, delta)
+
+	// The magnitude has to come out right regardless of how fast the machine is.
+	const truth = 0.5
+	if math.Abs(delta-truth) > 0.05 {
+		t.Errorf("measured relative difference %.4f is not within 0.05 of the true %.2f", delta, truth)
+	}
+
+	// The rest of the test is the claim about the clock, and it only means
+	// something while one operation is genuinely too cheap to time directly.
+	if mb >= tick {
+		t.Skipf("one operation of the slower candidate costs %.2f ns, which a %.0f ns clock resolves directly; "+
+			"the sub-resolution claim needs a faster machine or a cheaper operation", mb, tick)
+	}
+	if diff := mb - ma; diff >= tick {
+		t.Errorf("the difference being resolved, %.4f ns, is not below one clock tick of %.0f ns", diff, tick)
+	}
+	t.Logf("resolved a difference of %.4f ns using a clock that ticks every %.0f ns, a factor of %.0f",
+		mb-ma, tick, tick/(mb-ma))
 }
