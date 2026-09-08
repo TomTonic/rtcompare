@@ -330,7 +330,18 @@ func bootstrapSampleCrypto(xs []float64, rng *CPRNG) []float64 {
 // Prefer CompareSamples, which rejects NaN thresholds with a proper error.
 // Infinities are kept: they behave consistently, with -Inf mapping to 1 and
 // +Inf to 0.
-func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, prngSeed uint64) (confidenceForThreshold map[float64]float64) {
+func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, prngSeed uint64) map[float64]float64 {
+	// Block length one is single-observation resampling: the shared core draws
+	// exactly the values the dedicated sampler used to, in the same order.
+	return bootstrapConfidence(A, B, relativeGains, resamples, 1, prngSeed)
+}
+
+// bootstrapConfidence is the shared implementation of BootstrapConfidence and
+// BlockBootstrapConfidence. A blockLength of one gives the ordinary bootstrap.
+func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, blockLength int, prngSeed uint64) (confidenceForThreshold map[float64]float64) {
+	if blockLength == 0 {
+		blockLength = AutoBlockLength(max(len(A), len(B)))
+	}
 
 	// Distinct thresholds only. Counting a repeated threshold once per
 	// occurrence per replicate would push its "confidence" above 1.
@@ -360,24 +371,18 @@ func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 	// hundred bytes of use on the unseeded path, and would leave a measurable
 	// serial correlation between replicates on the seeded one; see
 	// bootstrapSampleDPRNG.
-	var cryptoRNG *CPRNG
-	var seededRNG *DPRNG
+	var next func(uint32) uint32
 	if prngSeed == 0 {
-		cryptoRNG = NewCPRNG(bootstrapCPRNGBufferBytes)
+		cryptoRNG := NewCPRNG(bootstrapCPRNGBufferBytes)
+		next = cryptoRNG.Uint32N
 	} else {
-		r := NewDPRNG(prngSeed)
-		seededRNG = &r
+		seededRNG := NewDPRNG(prngSeed)
+		next = seededRNG.UInt32N
 	}
 
 	for range resamples {
-		var sampleA, sampleB []float64
-		if prngSeed == 0 {
-			sampleA = bootstrapSampleCrypto(A, cryptoRNG)
-			sampleB = bootstrapSampleCrypto(B, cryptoRNG)
-		} else {
-			sampleA = bootstrapSampleDPRNG(A, seededRNG)
-			sampleB = bootstrapSampleDPRNG(B, seededRNG)
-		}
+		sampleA := blockSample(A, blockLength, next)
+		sampleB := blockSample(B, blockLength, next)
 		medA := QuickMedian(sampleA)
 		medB := QuickMedian(sampleB)
 

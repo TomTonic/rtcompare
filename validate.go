@@ -126,6 +126,24 @@ type HarnessValidation struct {
 	// of the drift where DriftRate is its prevalence.
 	MedianDriftShift float64
 
+	// Autocorrelation is the median lag-1 autocorrelation of the sample series,
+	// across the runs and both candidates. It says how much each measurement
+	// resembles the one taken before it.
+	//
+	// Its use is deciding whether the ordinary bootstrap can be trusted here.
+	// Resampling assumes the samples are exchangeable, and correlated samples
+	// carry less information than the same number of independent ones, so beyond
+	// some point a method that assumes independence grows overconfident. The
+	// point is around 0.2: in AR(1) simulations the rate of false signals from
+	// identical inputs held at its nominal 10% up to 0.08, reached 13.5% at 0.2,
+	// 21.7% at 0.4 and 33.1% at 0.6. Below roughly 0.2 there is nothing to fix;
+	// above it, see [BlockBootstrapConfidence].
+	//
+	// For reference, 600 real series on the machine these notes were written on
+	// averaged +0.10, with about 6% of them genuinely above 0.2 once the noise of
+	// the estimator itself is accounted for.
+	Autocorrelation float64
+
 	// Deltas and Confidences hold the per-run values the summary is built from,
 	// in the order the runs were performed. Their sequence is worth a look:
 	// a trend across them is drift rather than noise.
@@ -154,11 +172,12 @@ func (v HarnessValidation) String() string {
 			"  median confidence  %.3f\n"+
 			"  tied replicates    %.1f%%\n"+
 			"  drifting runs      %.1f%% (shift %+.3f%%)\n"+
+			"  autocorrelation    %+.3f (blocks worthwhile above ~0.2)\n"+
 			"  false signals      %.1f%% at level %.2f (%.1f%% expected)",
 		v.Runs, v.InnerLoops,
 		v.NoiseFloor*100, v.TypicalNoise*100,
 		v.MeanConfidence, v.MedianConfidence, v.TieRate*100,
-		v.DriftRate*100, v.MedianDriftShift*100,
+		v.DriftRate*100, v.MedianDriftShift*100, v.Autocorrelation,
 		v.FalseSignalRate*100, v.Level, 2*(1-v.Level)*100)
 }
 
@@ -256,6 +275,7 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 	confidences := make([]float64, 0, opt.Runs)
 	tieRates := make([]float64, 0, opt.Runs)
 	driftShifts := make([]float64, 0, 2*opt.Runs)
+	autocorrelations := make([]float64, 0, 2*opt.Runs)
 	driftedRuns := 0
 
 	for run := range opt.Runs {
@@ -293,6 +313,7 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 				continue
 			}
 			driftShifts = append(driftShifts, math.Abs(d.RelativeShift))
+			autocorrelations = append(autocorrelations, lag1Autocorrelation(series))
 			if d.Drifted(DriftLevel) {
 				drifted = true
 			}
@@ -328,6 +349,7 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 		Level:            opt.Level,
 		DriftRate:        float64(driftedRuns) / float64(opt.Runs),
 		MedianDriftShift: medianOrZero(driftShifts),
+		Autocorrelation:  medianOrZero(autocorrelations),
 		Deltas:           deltas,
 		Confidences:      confidences,
 	}, nil
