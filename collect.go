@@ -394,9 +394,9 @@ func Collect(a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, 
 		case OrderABBA:
 			aFirst = i%2 == 0
 		case OrderRandom:
-			// UInt32N uses the high bits of the scrambled state, which mix
+			// Uint32N uses the high bits of the scrambled state, which mix
 			// better than the low bit would.
-			aFirst = rng.UInt32N(2) == 0
+			aFirst = rng.Uint32N(2) == 0
 		case OrderSequential:
 			aFirst = true
 		}

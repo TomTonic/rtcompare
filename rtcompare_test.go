@@ -464,11 +464,11 @@ func TestBootstrapConfidence_HighRelativeGains_DeterministicIdenticalSamples(t *
 
 func TestF2T(t *testing.T) {
 	tests := []struct {
-		name         string
-		timesFaster  float64
-		expected     float64
-		expectNaN    bool
-		description  string
+		name        string
+		timesFaster float64
+		expected    float64
+		expectNaN   bool
+		description string
 	}{
 		{
 			name:        "zero input",
@@ -569,7 +569,7 @@ func TestF2T(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			result := F2T(tc.timesFaster)
-			
+
 			if tc.expectNaN {
 				if !math.IsNaN(result) {
 					t.Errorf("%s: expected NaN, got %v", tc.description, result)
@@ -591,14 +591,14 @@ func TestF2TEdgeCases(t *testing.T) {
 	// For timesFaster = 1, threshold should be 0 (no change)
 	// For 0 < timesFaster < 1, the threshold is negative (slowdown)
 	// For timesFaster <= 0 or NaN, returns NaN (invalid input)
-	
+
 	t.Run("boundary at 1", func(t *testing.T) {
 		result := F2T(1.0)
 		if result != 0.0 {
 			t.Errorf("F2T(1.0) should be exactly 0.0, got %v", result)
 		}
 	})
-	
+
 	t.Run("just below 1", func(t *testing.T) {
 		result := F2T(0.9999)
 		expected := 1.0 - 1.0/0.9999
@@ -606,7 +606,7 @@ func TestF2TEdgeCases(t *testing.T) {
 			t.Errorf("F2T(0.9999) should be %v (negative threshold for slowdown), got %v", expected, result)
 		}
 	})
-	
+
 	t.Run("just above 1", func(t *testing.T) {
 		result := F2T(1.0001)
 		expected := 1.0 - 1.0/1.0001
@@ -614,7 +614,7 @@ func TestF2TEdgeCases(t *testing.T) {
 			t.Errorf("F2T(1.0001) should be %v, got %v", expected, result)
 		}
 	})
-	
+
 	t.Run("mathematical consistency", func(t *testing.T) {
 		// Test that the formula is correct for various inputs
 		testValues := []float64{1.1, 1.25, 1.5, 2.0, 3.0, 5.0, 100.0, 1000.0}

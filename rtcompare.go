@@ -189,7 +189,7 @@ func CompareRuntimes(measurementsA, measurementsB []float64, relativeGains []flo
 // A non-zero prngSeed selects reproducible sampling from a DPRNG seeded with it;
 // a zero prngSeed selects cryptographic randomness from a freshly built CPRNG.
 //
-// Index selection goes through UInt32N/Uint32N, which use Lemire's multiply-shift
+// Index selection goes through Uint32N on either generator, which uses Lemire's multiply-shift
 // reduction rather than a modulo. The residual bias is bounded by 2^-32 relative
 // to the range and is negligible for sample sizes that fit in memory.
 //
@@ -249,7 +249,7 @@ func bootstrapSampleDPRNG(xs []float64, rng *DPRNG) []float64 {
 		return sample
 	}
 	for i := range n {
-		sample[i] = xs[rng.UInt32N(uint32(n))]
+		sample[i] = xs[rng.Uint32N(uint32(n))]
 	}
 	return sample
 }
@@ -377,7 +377,7 @@ func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 		next = cryptoRNG.Uint32N
 	} else {
 		seededRNG := NewDPRNG(prngSeed)
-		next = seededRNG.UInt32N
+		next = seededRNG.Uint32N
 	}
 
 	for range resamples {

@@ -336,3 +336,18 @@ func dMaxUint32(s []uint32) uint32 {
 	min, max := minMax(s...)
 	return max - min
 }
+
+// TestUInt32NAliasMatchesUint32N pins the deprecated spelling to the canonical
+// one, so that the alias cannot drift away from what it delegates to.
+func TestUInt32NAliasMatchesUint32N(t *testing.T) {
+	for _, n := range []uint32{1, 2, 7, 256, 1000, 1 << 20} {
+		canonical := NewDPRNG(0xA11A5)
+		deprecated := NewDPRNG(0xA11A5)
+		for i := range 1000 {
+			//nolint:staticcheck // exercising the deprecated spelling on purpose
+			if got, want := deprecated.UInt32N(n), canonical.Uint32N(n); got != want {
+				t.Fatalf("n=%d draw %d: UInt32N gave %d, Uint32N gave %d", n, i, got, want)
+			}
+		}
+	}
+}
