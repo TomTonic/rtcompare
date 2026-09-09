@@ -30,10 +30,19 @@ func scaledCandidate(name string, mult uint64) Candidate {
 // earlier version used 3000 inner loops and 21 repeats, which was comfortable
 // on a quiet laptop and far too coarse on a shared CI runner: it tied in a
 // third of replicates there and put the point estimate 12% off the truth.
+//
+// ValidationRuns is 10, not fewer. At 3 it produced NoiseFloor exactly 0 in
+// 2.5% of 200 local runs — the 90th-percentile floor over only three A/A
+// deltas needs just the top two of them to tie at zero, which quantized
+// timing does routinely — and a real assertion elsewhere in this file treats
+// exactly that as implausible. Ten runs saw it 0 times in the same 200
+// trials, and cost is still small: validation is the dominant cost of a
+// comparison, but these run against a fixed 20000-operation batch rather than
+// calibrating, so ten of them stay well under a second.
 func fastCompare() CompareOptions {
 	return CompareOptions{
 		Collect:        CollectOptions{Repeats: 51, InnerLoops: 20000},
-		ValidationRuns: 3,
+		ValidationRuns: 10,
 		Resamples:      600,
 	}
 }
