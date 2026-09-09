@@ -97,16 +97,27 @@ func (thisState *DPRNG) Float64() float64 {
 	return float64(u64>>11) * (1.0 / (1 << 53)) // use the top 53 bits for a float64 in [0.0, 1.0)
 }
 
-// UInt32N returns a pseudo-random uint32 in the range [0, n) like Go’s math/rand.Intn().
+// Uint32N returns a pseudo-random uint32 in the range [0, n) like Go’s math/rand.Intn().
 // Use this function for generating random indices or sizes for slices or arrays, for example.
 // This code avoids modulo arithmetics by implementing Lemire's fast alternative to the modulo reduction
 // method (see https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction/).
 // It has a deterministic (i.e. constant) runtime and a high probability to be inlined by the compiler.
 // Note: This implementation may introduce a slight bias if n is not a power of two.
-func (thisState *DPRNG) UInt32N(n uint32) uint32 {
+func (thisState *DPRNG) Uint32N(n uint32) uint32 {
 	u64 := thisState.Uint64()
 	hi, _ := bits.Mul64(u64, uint64(n))
 	// we only need the high 64 bits, which is equivalent to (u64 * n) >> 64
 	// since n is a uint32 (at most 2^32 - 1), hi is at most 2^32 - 1 and fits in 32 bits
 	return uint32(hi)
+}
+
+// UInt32N is [DPRNG.Uint32N] under its original name.
+//
+// Deprecated: the capitalisation was inconsistent with [CPRNG.Uint32N] and with
+// the Go convention of treating an initialism as one word, which math/rand/v2
+// follows in its own Uint32N. Use Uint32N instead. This wrapper delegates and is
+// small enough to be inlined, so it costs nothing; it exists so that callers
+// written against the old name keep compiling.
+func (thisState *DPRNG) UInt32N(n uint32) uint32 {
+	return thisState.Uint32N(n)
 }
