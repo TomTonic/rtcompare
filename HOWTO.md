@@ -468,6 +468,33 @@ value is very high (0.4 and up), block resampling only partly repairs the
 problem — that's a sign to also address whatever is disturbing the
 machine, using the same steps as for a high noise floor.
 
+One thing worth knowing if you've set `SkipValidation: true`: this decision is
+then made from a single, noisier read of the correlation, taken from the
+comparison run itself rather than from the several separate A/A experiments
+`ValidateHarness` would otherwise average over. With validation left on (the
+default), the number `Compare` acts on is the median across those experiments
+— a steadier estimate of a property of your machine and setup, not a one-off
+reading of whatever happened to be going on during this particular run. That's
+one more reason `SkipValidation` trades away more than just the noise floor.
+
+**Why doesn't interleaving the order (ABBA, see Step 3) already fix this?**
+It's a fair question, and the answer is that ABBA and blocks solve two
+different problems. ABBA cancels a trend's effect on *which candidate looks
+faster* — if the machine is slowly getting hotter, both candidates are
+measured, on average, at the same points in that slowdown, so it washes out of
+the comparison between them. Autocorrelation is a property of *one candidate's
+own sequence of measurements* — whether its 51st batch resembles its 50th more
+than chance would suggest — and that says nothing about bias between A and B.
+It says something about how much independent information those 51
+measurements actually contain. Resampling one at a time, as the plain
+bootstrap does, assumes each of them is a fresh, independent look; strong
+autocorrelation means they're not, and no amount of interleaving the order
+between A and B changes that fact about A's own numbers. This has been
+measured directly: on data manufactured to have no real difference at all,
+the plain bootstrap reported a "difference" in 21.7% of runs at a lag-1
+correlation of 0.4, against a target of 10% — interleaving the order was
+already in effect and did not prevent it.
+
 ### The confidence interval is very wide
 
 **Symptom:** `Estimate.Low` and `Estimate.High` are far apart — say, "A is
