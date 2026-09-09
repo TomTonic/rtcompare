@@ -104,6 +104,17 @@ func main() {
 	for _, t := range []float64{0.05, 0.10, 0.20, 0.30} {
 		fmt.Printf("  %6.2f%%   %7.2f%%\n", t*100, report.Confidence[t]*100)
 	}
+
+	// sink is never meant to be read for its value, only written to during the
+	// batches above so the compiler cannot prove the loop's result is unused
+	// and optimize it away. That makes it invisible to static analysis in a
+	// package main, which can see the whole program and correctly notice that
+	// nothing downstream ever looks at it — unlike the same pattern in this
+	// module's own test files, where a library package's unused-variable check
+	// is deliberately more conservative. This line is the fix: a read that is
+	// itself immediately discarded, costing nothing at runtime, but enough to
+	// tell the linter what the accumulation already told the compiler.
+	_ = sink
 }
 
 // medianCandidate wraps one median implementation as a candidate.
