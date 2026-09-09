@@ -11,6 +11,8 @@
 
 rtcompare is a small Go library for deciding whether one code path is genuinely faster than another. It measures both candidates, resamples the measurements to estimate how confident that conclusion is, and — the part that distinguishes it — measures what the machine invents on its own so that the conclusion can be read against it.
 
+New to this and not a statistics person? **[Read HOWTO.md](HOWTO.md)** — it walks through what to actually do, in plain language, including what each warning means and what to do about it.
+
 Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, deterministic prng, go
 
 ## Features
@@ -101,6 +103,8 @@ resolved: A is faster than B
 ```
 
 `Compare` validates both candidates against themselves before comparing them, so it costs a few seconds. Set `SkipValidation` to pay only for the measurement, accepting that the result then has no noise floor to be read against. The individual steps are all exported too, and `cmd/rtcompare-example` shows both: the one call, and then the same measurements taken apart by hand.
+
+Not sure what a warning like "resampled in blocks" or "does not clear the noise floor" means, or what to do about it? **[HOWTO.md](HOWTO.md)** goes through each step `Compare` performs and each warning it can produce, with a plain-language explanation and a concrete fix.
 
 ## Technical background
 
