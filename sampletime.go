@@ -55,13 +55,20 @@ var (
 //     returned value is the resolution.
 //   - On Linux/amd64, where clock_gettime resolves to a nanosecond through the
 //     vDSO, the call is expected to be the larger of the two, which would make
-//     the returned value closer to that overhead than to any tick. This has not
-//     been measured here; the existing tests expect a value below 50 ns, which
-//     is consistent with it.
+//     the returned value closer to that overhead than to any tick. Measured on
+//     a GitHub Actions runner under coverage instrumentation, that overhead
+//     came to 60 ns, well above the 50 ns an earlier version of this comment
+//     assumed without measuring; a shared, virtualized machine plausibly makes
+//     the vDSO call itself slower than a quiet dedicated one does. The tests no
+//     longer assert a tighter bound than that, because the number this function
+//     returns is a property of the machine it runs on, not a constant the test
+//     suite can know in advance.
 //   - On Windows the timestamp comes from QueryPerformanceCounter, whose
-//     frequency is typically 10 MHz, giving a 100 ns tick. This too is from
-//     documentation and from what this package's tests assert, not from a
-//     measurement taken here.
+//     frequency comes from the platform's hardware abstraction layer rather
+//     than from measuring call overhead, and is effectively always 10 MHz on
+//     modern Windows, giving a 100 ns tick. Being a hardware fact rather than a
+//     benchmark result, this one is asserted exactly; it is not exercised by
+//     this project's own CI, which runs on Linux only.
 //
 // In every one of those cases the returned number answers the same question and
 // is the one worth having: this is as fine as measurement gets here. Note that
