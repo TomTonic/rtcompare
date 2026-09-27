@@ -171,7 +171,7 @@ duration — see [Troubleshooting](#troubleshooting-what-to-do-when).
 
 ### Step 2 — Find out what your own machine invents from nothing
 
-**Function:** `ValidateHarness`
+**Function:** `ValidatePair` (or `ValidateHarness` for a single candidate)
 
 This is the step every other benchmarking approach skips, and it's the reason
 rtcompare exists.
@@ -198,6 +198,17 @@ well-behaved — one might allocate memory and get interrupted by garbage
 collection more than the other — and your comparison is only as trustworthy as
 the *worse* of the two. `Compare` does this automatically and uses the higher
 (worse) of the two floors.
+
+**And do it for both *together*,** with `ValidatePair(a, b, ...)`, rather than
+calling `ValidateHarness(a)` and then `ValidateHarness(b)`. Validating one
+candidate on its own means running it alone for a while, and whatever runs
+alone last leaves the CPU's caches full of its own data. If you validate A and
+then B and then compare them, B starts the comparison warm and A starts cold.
+See [Whatever ran last starts warm](#whatever-ran-last-starts-warm) for how
+much that can matter. `ValidatePair` interleaves the two validations batch by
+batch, so that neither candidate ever has the machine to itself, and the noise
+floors are measured with the other candidate competing for the caches, just
+as it will in the real comparison.
 
 **What you get back**, and what each number tells you:
 
@@ -227,6 +238,12 @@ against a machine that's changing over time — if it's getting slower as the
 run progresses, both candidates are equally exposed to that instead of
 whichever one happens to run later.
 
+Before the first measured batch, `Collect` warms both candidates up, again
+alternating between them, for at least `CollectOptions.WarmupDuration` (300 ms
+by default). That is not about the one-time costs you might expect a warm-up
+for, such as page faults; a single batch would cover those. It is about the
+caches, see [below](#whatever-ran-last-starts-warm).
+
 This gives you two lists of numbers — `SamplesA` and `SamplesB` — one
 measurement per batch. Everything from here on works from these two lists.
 
@@ -244,7 +261,11 @@ bootstrap is structurally blind to it, because it discards the order the
 numbers arrived in.
 
 `DetectDrift` looks specifically for that trend, on each candidate's series
-separately. If it finds one, it's worth knowing even though ABBA ordering
+separately. `Compare` also runs it on the ratio B/A of each pair of
+neighbouring batches (`Report.DriftRatio`), which catches something the two
+series on their own cannot: one candidate that started with an advantage and
+loses it as the run goes on. A machine that slows down slows both candidates
+and leaves the ratio flat; a head start moves the ratio and nothing else. If it finds one, it's worth knowing even though ABBA ordering
 already protects the *comparison* from being biased by it — a real trend
 means your measurements are less independent of each other than the
 statistics assume, which affects how much you should trust *any* interval or
@@ -375,6 +396,63 @@ honestly — as the cost of that whole region, not as an isolated number for
 your function alone. Read a result as "how much faster is this measured
 region," not "how much faster is this one function in isolation."
 
+## Whatever ran last starts warm
+
+Your CPU keeps recently used memory in its caches, and the last-level cache is
+the one that matters here: tens of megabytes, shared by everything. Whatever
+touched its data last, for long enough, owns most of that cache. That can be
+one of your candidates, for reasons that have nothing to do with its speed:
+
+- it was **built** last — you set up A's data structure, then B's;
+- it was **validated** last, if you called `ValidateHarness` once per
+  candidate;
+- it was **calibrated** last, since calibration runs each candidate on its own.
+
+The candidate that ran last then starts the measurement warm and the other
+cold. When both candidates' data fit in the cache together, this evens out
+within a batch or two and does not matter. When each one's data is about the
+size of the last-level cache, it matters a lot. Short, calibrated batches may
+not touch enough memory to turn the cache over, so the head start can survive
+into the medians. Two *identical* 16 MB pointer-chasing structures, compared
+on a machine with 32 MB of L3, came out 5 to 50% apart, always in favour of
+the one that ran alone last, with narrow intervals that reported the
+difference as real. (That is [issue #111](https://github.com/TomTonic/rtcompare/issues/111);
+`cmd/rtcompare-aa` reproduces it.)
+
+rtcompare deals with this in three ways, and `Compare` uses all of them:
+
+1. `ValidatePair` validates both candidates together, so validation leaves
+   neither of them ahead.
+2. `Collect` warms both candidates up, alternately, for at least
+   `CollectOptions.WarmupDuration`, 300 ms by default. In the experiment
+   above, about 250 ms were enough to erase the head start. This is what a
+   comparison now costs extra: 0.3 s per `Collect` and once more for the
+   validation, 0.6 s per `Compare`. For small data that stays in the cache you
+   can lower it, and `time.Nanosecond` warms up by batch count alone.
+3. `Compare` checks the ratio B/A for a trend across the run
+   (`Report.DriftRatio`) and warns when it is larger than the result's
+   resolution — the sign that the candidates had not settled when the
+   measurement began. If you see that warning, raise `WarmupDuration`.
+
+What none of this can remove is a difference in **where** the data landed in
+memory. Two structures with identical content, built one after the other, are
+not laid out identically: different addresses, different pages, different
+cache sets. In the experiment above, after the warm-up, the structure built
+second was still 3 to 5% faster, whichever role it played, and a warm-up of
+2 s instead of 0.3 s did not change that. That is a real difference between the
+two data structures as they sit in memory, not a measurement artefact, and it
+is why comparing large data in a single process is not enough; see
+[issue #109](https://github.com/TomTonic/rtcompare/issues/109).
+
+The practical checks, for any comparison of large data:
+
+- **Swap the roles.** Compare (A, B) and then (B, A). A bias towards a role
+  flips the sign of the delta when you swap; a real difference does not.
+- **Swap the build order.** Build B's data first and A's second. If the
+  result moves with the build order, you are measuring layout.
+- **Do not validate candidates one at a time** before comparing them. Use
+  `ValidatePair`, or `Compare`, which does.
+
 ## Troubleshooting: what to do, when
 
 This is the part of the "long protocol" that's normally invisible — the
@@ -426,6 +504,22 @@ mid-batch.
   machine right now — treat any difference smaller than it as unresolved and
   move on, or find a quieter machine (a dedicated benchmark server, a CI
   runner with less contention) if this comparison matters enough.
+
+### A warning says the candidates had not reached a steady state
+
+**Symptom:** `Report.Warnings` says that "the ratio B/A shifted" during the
+run.
+
+**What it means:** one candidate was ahead at the start of the run and lost
+that advantage as it went on, usually because it started with the caches full
+of its own data. The median of the run then depends on how long the run was,
+and the difference it reports is partly an artefact. See
+[Whatever ran last starts warm](#whatever-ran-last-starts-warm).
+
+**What to do:** raise `CollectOptions.WarmupDuration`, for example to one or
+two seconds, and check that nothing runs one candidate alone between your
+setup and the comparison. Then swap the roles of the two candidates and see
+whether the result keeps its sign.
 
 ### A drift warning appears
 

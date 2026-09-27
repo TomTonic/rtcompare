@@ -311,16 +311,24 @@ type ValidationOptions struct {
 // each direction, because splitting ties needs the confidence both ways. The
 // resampling dominates. Measured on a candidate calibrated to 48 microsecond
 // batches, the whole validation took 0.76 s at ten runs and 3.03 s at forty, of
-// which the measurement itself was under a tenth.
+// which the measurement itself was under a tenth. On top of that comes one
+// warm-up of CollectOptions.WarmupDuration, [DefaultWarmupDuration] unless set,
+// before the first run only; the later runs warm up by count alone, since the
+// candidate has been running all along.
 //
 // A worked use, and the reason the API exists: measure the noise floor first,
 // then require a real result to clear it.
 //
 // Validate both candidates, not just one: they need not be equally well
-// behaved, and a comparison is only as trustworthy as the worse of them.
+// behaved, and a comparison is only as trustworthy as the worse of them. When
+// the two are about to be compared, validate them together with [ValidatePair]
+// rather than calling this function twice. A candidate validated on its own
+// runs alone for the whole validation and leaves the caches full of its own
+// data, so the one validated last starts the comparison warm and the other
+// cold; with a working set near the size of the last-level cache that alone has
+// produced differences of 10 to 50% between identical code.
 //
-//	va, err := rtcompare.ValidateHarness(fast, rtcompare.ValidationOptions{Collect: opts})
-//	vb, err := rtcompare.ValidateHarness(slow, rtcompare.ValidationOptions{Collect: opts})
+//	va, vb, err := rtcompare.ValidatePair(fast, slow, rtcompare.ValidationOptions{Collect: opts})
 //	floor := max(va.NoiseFloor, vb.NoiseFloor)
 //
 //	sa, sb, err := rtcompare.Collect(fast, slow, opts)
@@ -332,14 +340,121 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 	if c.Batch == nil {
 		return HarnessValidation{}, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", c.label("under validation"))
 	}
+	opt, s, err := opt.resolve()
+	if err != nil {
+		return HarnessValidation{}, err
+	}
+	if s.innerLoops == 0 {
+		// Calibrate once. Recalibrating per run would let the batch size drift
+		// between runs and make their noise levels incomparable.
+		cal, err := CalibrateInnerLoops(c, opt.calibration())
+		if err != nil {
+			return HarnessValidation{}, fmt.Errorf("calibrating candidate %s: %w", c.label("under validation"), err)
+		}
+		s.innerLoops = cal.InnerLoops
+	}
+
+	runs := newAARuns(opt)
+	for run := range opt.Runs {
+		samples := measureInTurn([]Candidate{c, c}, s.forRun(run))
+		runs.add(samples[0], samples[1])
+	}
+	return runs.result(s.innerLoops), nil
+}
+
+// ValidatePair runs the A/A validation of two candidates together, and returns
+// the same [HarnessValidation] for each that [ValidateHarness] would.
+//
+// Parameters: a and b are the two candidates that are about to be compared,
+// and opt holds the options the comparison will use, exactly as for
+// ValidateHarness. When opt.Collect.InnerLoops is zero, both candidates are
+// calibrated and the larger batch size is used for both validations, as
+// [Compare] and [Collect] do it, so that the floors describe the batch size the
+// comparison will measure at.
+//
+// Use it in place of two calls to ValidateHarness whenever the validation is
+// followed by a comparison of the same two candidates, which is what [Compare]
+// does. The difference is the order in which the batches run. Called one after
+// the other, the two validations each let one candidate run alone for a long
+// time, and whichever ran last starts the comparison with the caches full of its
+// own data. For a working set near the size of the last-level cache that is a
+// head start large enough to report identical code as tens of percent apart
+// (issue #111). ValidatePair instead runs every A/A experiment of a
+// interleaved with one of b, batch by batch in the balanced order A, B, B′, A′
+// and back, so neither candidate ever runs alone for more than two batches. The
+// floors are measured with the other candidate competing for the caches, as it
+// will during the comparison; see pairSlots for why the order is that one.
+//
+// The cost is the same as the two separate calls, minus one warm-up.
+//
+// An error is returned if either candidate has a nil Batch, for the option
+// errors of ValidateHarness, or if calibration fails.
+//
+//	va, vb, err := rtcompare.ValidatePair(a, b, rtcompare.ValidationOptions{Collect: opts})
+//	if err != nil { ... }
+//	floor := max(va.NoiseFloor, vb.NoiseFloor)
+//	sa, sb, err := rtcompare.Collect(a, b, opts)
+func ValidatePair(a, b Candidate, opt ValidationOptions) (va, vb HarnessValidation, err error) {
+	if a.Batch == nil {
+		return va, vb, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", a.label("A"))
+	}
+	if b.Batch == nil {
+		return va, vb, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", b.label("B"))
+	}
+	opt, s, err := opt.resolve()
+	if err != nil {
+		return va, vb, err
+	}
+	if s.innerLoops == 0 {
+		if s.innerLoops, err = calibratePair(a, b, opt.calibration()); err != nil {
+			return va, vb, err
+		}
+	}
+
+	both := [2]Candidate{a, b}
+	cands := make([]Candidate, len(pairSlots))
+	var halves [2][]int // the two slots of each candidate
+	for slot, who := range pairSlots {
+		cands[slot] = both[who]
+		halves[who] = append(halves[who], slot)
+	}
+	runs := [2]*aaRuns{newAARuns(opt), newAARuns(opt)}
+	for run := range opt.Runs {
+		samples := measureInTurn(cands, s.forRun(run))
+		for who, h := range halves {
+			runs[who].add(samples[h[0]], samples[h[1]])
+		}
+	}
+	return runs[0].result(s.innerLoops), runs[1].result(s.innerLoops), nil
+}
+
+// pairSlots says which candidate, 0 for a and 1 for b, runs in each of the four
+// slots of a paired validation round. Slots 0 and 3 are a's two halves of its
+// A/A experiment, slots 1 and 2 are b's.
+//
+// The order matters because an A/A experiment is only unbiased if its two
+// halves are measured under the same conditions, and one condition is what ran
+// just before. Rounds alternate forwards and backwards, so the slot that ends
+// one round also starts the next and runs twice in a row. With A, B, A′, B′ that
+// would always be the same slot, A in one direction and B′ in the other: A
+// would follow itself half the time and A′ never, which lent A a warm start
+// that A′ did not have and inflated the floors. With A, B, B′, A′ each half of
+// each candidate is preceded by its own candidate in one direction and by the
+// other in the other, so both halves see the same history.
+var pairSlots = [4]int{0, 1, 1, 0}
+
+// resolve checks the options, fills in their defaults and derives the
+// measurement schedule, so that the single and the paired validation cannot
+// interpret them differently.
+func (opt ValidationOptions) resolve() (ValidationOptions, schedule, error) {
 	if opt.Runs < 0 {
-		return HarnessValidation{}, fmt.Errorf("rtcompare: Runs must not be negative, got %d", opt.Runs)
+		return opt, schedule{}, fmt.Errorf("rtcompare: Runs must not be negative, got %d", opt.Runs)
 	}
 	if opt.Runs == 0 {
 		opt.Runs = DefaultValidationRuns
 	}
 	if opt.Runs < 2 {
-		return HarnessValidation{}, fmt.Errorf("rtcompare: Runs must be at least 2 for a noise floor to mean anything, got %d", opt.Runs)
+		return opt, schedule{}, fmt.Errorf("rtcompare: Runs must be at least 2 for a noise floor to mean anything, got %d", opt.Runs)
 	}
 	if opt.Resamples == 0 {
 		opt.Resamples = DefaultResamples
@@ -348,111 +463,137 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 		opt.Level = DefaultValidationLevel
 	}
 	if opt.Level <= 0.5 || opt.Level >= 1 {
-		return HarnessValidation{}, fmt.Errorf("rtcompare: Level must be in (0.5, 1), got %v", opt.Level)
+		return opt, schedule{}, fmt.Errorf("rtcompare: Level must be in (0.5, 1), got %v", opt.Level)
 	}
+	s, err := opt.Collect.schedule()
+	return opt, s, err
+}
 
-	co := opt.Collect
-	if co.InnerLoops == 0 {
-		// Calibrate once. Recalibrating per run would let the batch size drift
-		// between runs and make their noise levels incomparable.
-		cal, err := CalibrateInnerLoops(c, CalibrationOptions{
-			MaxQuantizationError: co.MaxQuantizationError,
-			MaxInnerLoops:        co.MaxInnerLoops,
-			GCBetween:            co.GCBetween,
-			DisableGC:            co.DisableGC,
-		})
+// calibration derives the options for sizing the validation's batches from the
+// measurement options, so that calibration sees the conditions the runs will.
+func (opt ValidationOptions) calibration() CalibrationOptions {
+	return CalibrationOptions{
+		MaxQuantizationError: opt.Collect.MaxQuantizationError,
+		MaxInnerLoops:        opt.Collect.MaxInnerLoops,
+		GCBetween:            opt.Collect.GCBetween,
+		DisableGC:            opt.Collect.DisableGC,
+	}
+}
+
+// forRun returns the schedule for one A/A run. Only the first run warms up for
+// the full duration: the later ones follow directly on the batches of the run
+// before, so the caches are already in the state a duration would buy, and
+// paying for it again would multiply the cost of a validation by the run count.
+func (s schedule) forRun(run int) schedule {
+	if run > 0 {
+		s.warmupDuration = 0
+	}
+	return s
+}
+
+// aaRuns accumulates the per-run figures of repeated A/A experiments on one
+// candidate and summarises them. It exists so that the single and the paired
+// validation compute their reports in exactly the same way.
+type aaRuns struct {
+	opt              ValidationOptions
+	deltas           []float64
+	confidences      []float64
+	tieRates         []float64
+	driftShifts      []float64
+	autocorrelations []float64
+	driftedRuns      int
+}
+
+func newAARuns(opt ValidationOptions) *aaRuns {
+	return &aaRuns{
+		opt:              opt,
+		deltas:           make([]float64, 0, opt.Runs),
+		confidences:      make([]float64, 0, opt.Runs),
+		tieRates:         make([]float64, 0, opt.Runs),
+		driftShifts:      make([]float64, 0, 2*opt.Runs),
+		autocorrelations: make([]float64, 0, 2*opt.Runs),
+	}
+}
+
+// add records one A/A run from its two sample series.
+func (r *aaRuns) add(sampleA, sampleB []float64) {
+	medA, medB := Median(sampleA), Median(sampleB)
+	delta := 0.0
+	if medB != 0 && !math.IsNaN(medA) && !math.IsNaN(medB) {
+		delta = 1 - medA/medB
+	}
+	r.deltas = append(r.deltas, delta)
+
+	// Both directions, so that ties can be split. With
+	//   confAB = P(medA < medB) + P(tie)
+	//   confBA = P(medA > medB) + P(tie)
+	// and the three probabilities summing to one, (confAB + 1 - confBA)/2
+	// collapses to P(medA < medB) + P(tie)/2, and confAB + confBA - 1
+	// recovers the tie rate. Both follow from the public API alone.
+	confAB := BootstrapConfidence(sampleA, sampleB, []float64{0.0}, r.opt.Resamples, 0)[0.0]
+	confBA := BootstrapConfidence(sampleB, sampleA, []float64{0.0}, r.opt.Resamples, 0)[0.0]
+	r.confidences = append(r.confidences, (confAB+1-confBA)/2)
+	r.tieRates = append(r.tieRates, math.Max(0, confAB+confBA-1))
+
+	// Drift is a property of the order the samples arrived in, which the
+	// bootstrap above has already discarded. Both series are examined; a run
+	// counts as drifting if either did.
+	drifted := false
+	for _, series := range [][]float64{sampleA, sampleB} {
+		d, err := DetectDrift(series)
 		if err != nil {
-			return HarnessValidation{}, fmt.Errorf("calibrating candidate %s: %w", c.label("under validation"), err)
+			// Too few samples to look for a trend, or a non-finite value.
+			// Neither is a reason to fail the validation.
+			continue
 		}
-		co.InnerLoops = cal.InnerLoops
-	}
-
-	deltas := make([]float64, 0, opt.Runs)
-	confidences := make([]float64, 0, opt.Runs)
-	tieRates := make([]float64, 0, opt.Runs)
-	driftShifts := make([]float64, 0, 2*opt.Runs)
-	autocorrelations := make([]float64, 0, 2*opt.Runs)
-	driftedRuns := 0
-
-	for run := range opt.Runs {
-		sampleA, sampleB, err := Collect(c, c, co)
-		if err != nil {
-			return HarnessValidation{}, fmt.Errorf("A/A run %d of %d: %w", run+1, opt.Runs, err)
-		}
-		medA, medB := Median(sampleA), Median(sampleB)
-		delta := 0.0
-		if medB != 0 && !math.IsNaN(medA) && !math.IsNaN(medB) {
-			delta = 1 - medA/medB
-		}
-		deltas = append(deltas, delta)
-
-		// Both directions, so that ties can be split. With
-		//   confAB = P(medA < medB) + P(tie)
-		//   confBA = P(medA > medB) + P(tie)
-		// and the three probabilities summing to one, (confAB + 1 - confBA)/2
-		// collapses to P(medA < medB) + P(tie)/2, and confAB + confBA - 1
-		// recovers the tie rate. Both follow from the public API alone.
-		confAB := BootstrapConfidence(sampleA, sampleB, []float64{0.0}, opt.Resamples, 0)[0.0]
-		confBA := BootstrapConfidence(sampleB, sampleA, []float64{0.0}, opt.Resamples, 0)[0.0]
-		confidences = append(confidences, (confAB+1-confBA)/2)
-		tieRates = append(tieRates, math.Max(0, confAB+confBA-1))
-
-		// Drift is a property of the order the samples arrived in, which the
-		// bootstrap above has already discarded. Both series are examined; a run
-		// counts as drifting if either did.
-		drifted := false
-		for _, series := range [][]float64{sampleA, sampleB} {
-			d, err := DetectDrift(series)
-			if err != nil {
-				// Too few samples to look for a trend, or a non-finite value.
-				// Neither is a reason to fail the validation.
-				continue
-			}
-			driftShifts = append(driftShifts, math.Abs(d.RelativeShift))
-			autocorrelations = append(autocorrelations, lag1Autocorrelation(series))
-			if d.Drifted(DriftLevel) {
-				drifted = true
-			}
-		}
-		if drifted {
-			driftedRuns++
+		r.driftShifts = append(r.driftShifts, math.Abs(d.RelativeShift))
+		r.autocorrelations = append(r.autocorrelations, lag1Autocorrelation(series))
+		if d.Drifted(DriftLevel) {
+			drifted = true
 		}
 	}
+	if drifted {
+		r.driftedRuns++
+	}
+}
 
+// result summarises the recorded runs.
+func (r *aaRuns) result(innerLoops uint64) HarnessValidation {
 	// Sorted so that the floor can be read off as a quantile. This is a private
 	// copy, so the caller's Deltas keep the order the runs were performed in.
-	absDeltas := make([]float64, len(deltas))
-	for i, d := range deltas {
+	absDeltas := make([]float64, len(r.deltas))
+	for i, d := range r.deltas {
 		absDeltas[i] = math.Abs(d)
 	}
 	slices.Sort(absDeltas)
 
 	var sum float64
 	falseSignals := 0
-	for _, conf := range confidences {
+	for _, conf := range r.confidences {
 		sum += conf
-		if conf > opt.Level || conf < 1-opt.Level {
+		if conf > r.opt.Level || conf < 1-r.opt.Level {
 			falseSignals++
 		}
 	}
 
+	runs := len(r.deltas)
 	return HarnessValidation{
-		Runs:             opt.Runs,
-		InnerLoops:       co.InnerLoops,
+		Runs:             runs,
+		InnerLoops:       innerLoops,
 		NoiseFloor:       quantileOfSorted(absDeltas, NoiseFloorQuantile),
-		MaxObservedNoise: absDeltas[len(absDeltas)-1],
+		MaxObservedNoise: absDeltas[runs-1],
 		TypicalNoise:     Median(absDeltas),
-		MeanConfidence:   sum / float64(len(confidences)),
-		MedianConfidence: Median(confidences),
-		TieRate:          Median(tieRates),
-		FalseSignalRate:  float64(falseSignals) / float64(len(confidences)),
-		Level:            opt.Level,
-		DriftRate:        float64(driftedRuns) / float64(opt.Runs),
-		MedianDriftShift: medianOrZero(driftShifts),
-		Autocorrelation:  medianOrZero(autocorrelations),
-		Deltas:           deltas,
-		Confidences:      confidences,
-	}, nil
+		MeanConfidence:   sum / float64(runs),
+		MedianConfidence: Median(r.confidences),
+		TieRate:          Median(r.tieRates),
+		FalseSignalRate:  float64(falseSignals) / float64(runs),
+		Level:            r.opt.Level,
+		DriftRate:        float64(r.driftedRuns) / float64(runs),
+		MedianDriftShift: medianOrZero(r.driftShifts),
+		Autocorrelation:  medianOrZero(r.autocorrelations),
+		Deltas:           r.deltas,
+		Confidences:      r.confidences,
+	}
 }
 
 // medianOrZero is Median with an empty input mapping to zero rather than to the

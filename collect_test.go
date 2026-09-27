@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"testing"
+	"time"
 )
 
 // collectSink absorbs results of measured work so the compiler cannot eliminate it.
@@ -49,6 +50,7 @@ func TestCollectRejectsBadOptions(t *testing.T) {
 		{"negative Repeats", CollectOptions{Repeats: -1, InnerLoops: 1}, "Repeats must not be negative"},
 		{"too few Repeats", CollectOptions{Repeats: 10, InnerLoops: 1}, "at least"},
 		{"negative Warmup", CollectOptions{Repeats: 11, InnerLoops: 1, Warmup: -1}, "SkipWarmup"},
+		{"negative WarmupDuration", CollectOptions{Repeats: 11, InnerLoops: 1, WarmupDuration: -time.Millisecond}, "WarmupDuration"},
 		{"unknown Order", CollectOptions{Repeats: 11, InnerLoops: 1, Order: Order(42)}, "Order"},
 	}
 	for _, c := range cases {
@@ -152,10 +154,12 @@ func TestCollectWarmupCounts(t *testing.T) {
 		return &n, Candidate{Batch: func(uint64) { n++ }}
 	}
 
-	// Warmup: 0 selects DefaultWarmup, so each candidate runs Repeats+DefaultWarmup times.
+	// Warmup: 0 selects DefaultWarmup, so each candidate runs Repeats+DefaultWarmup
+	// times. A nanosecond of WarmupDuration is met by the first round, which
+	// leaves the count to decide.
 	na, ca := count()
 	nb, cb := count()
-	if _, _, err := Collect(ca, cb, CollectOptions{Repeats: 11, InnerLoops: 1}); err != nil {
+	if _, _, err := Collect(ca, cb, CollectOptions{Repeats: 11, InnerLoops: 1, WarmupDuration: time.Nanosecond}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if want := 11 + DefaultWarmup; *na != want || *nb != want {
@@ -165,7 +169,7 @@ func TestCollectWarmupCounts(t *testing.T) {
 	// Explicit warm-up count.
 	na, ca = count()
 	nb, cb = count()
-	if _, _, err := Collect(ca, cb, CollectOptions{Repeats: 11, InnerLoops: 1, Warmup: 3}); err != nil {
+	if _, _, err := Collect(ca, cb, CollectOptions{Repeats: 11, InnerLoops: 1, Warmup: 3, WarmupDuration: time.Nanosecond}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if *na != 14 || *nb != 14 {
@@ -180,6 +184,76 @@ func TestCollectWarmupCounts(t *testing.T) {
 	}
 	if *na != 11 || *nb != 11 {
 		t.Errorf("SkipWarmup: expected 11 calls each, got %d and %d", *na, *nb)
+	}
+}
+
+// TestCollectWarmupRunsForItsDuration checks that a comparison does not start
+// measuring before the candidates have run long enough to settle. It belongs to
+// Collect's warm-up, which is bounded by time as well as by a batch count
+// because a count of short batches cannot turn over a large cache. With
+// batches that take no time at all, a Collect call has to last at least the
+// requested WarmupDuration, and SkipWarmup has to switch the duration off along
+// with the count.
+func TestCollectWarmupRunsForItsDuration(t *testing.T) {
+	const want = 40 * time.Millisecond
+	start := time.Now()
+	if _, _, err := Collect(noopCandidate(), noopCandidate(), CollectOptions{Repeats: 11, InnerLoops: 1, WarmupDuration: want}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := time.Since(start); got < want {
+		t.Errorf("Collect returned after %v, before the %v warm-up could have run", got, want)
+	}
+
+	start = time.Now()
+	if _, _, err := Collect(noopCandidate(), noopCandidate(), CollectOptions{Repeats: 11, InnerLoops: 1, WarmupDuration: time.Hour, SkipWarmup: true}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := time.Since(start); got > time.Minute {
+		t.Errorf("SkipWarmup should disable the warm-up duration too, but Collect took %v", got)
+	}
+}
+
+// TestCollectWarmupAlternatesOrder checks that neither candidate gets the last
+// word before the measurement starts. It belongs to Collect's warm-up, which
+// reverses the order every round like OrderABBA does, because a warm-up that
+// always ends on the same candidate hands that candidate the caches. The
+// expectation is the exact sequence A B B A A B B A for four rounds, followed
+// by the measurement's own ABBA.
+func TestCollectWarmupAlternatesOrder(t *testing.T) {
+	log, a, b := recorder()
+	if _, _, err := Collect(a, b, CollectOptions{Repeats: 12, InnerLoops: 1, Warmup: 4, WarmupDuration: time.Nanosecond}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := strings.Join((*log)[:8], ""), "ABBAABBA"; got != want {
+		t.Errorf("warm-up order: got %s, want %s", got, want)
+	}
+	if got, want := strings.Join((*log)[8:], ""), strings.Repeat("ABBA", 6); got != want {
+		t.Errorf("measurement order after warm-up: got %s, want %s", got, want)
+	}
+}
+
+// TestMeasureInTurnBalancesManyCandidates checks the loop that lets several
+// candidates share one measurement, which is what the paired A/A validation
+// runs on. Under OrderABBA every round is the previous one reversed, so every
+// candidate holds every position equally often, and each gets its own sample
+// series of the requested length.
+func TestMeasureInTurnBalancesManyCandidates(t *testing.T) {
+	var log []string
+	mk := func(name string) Candidate {
+		return Candidate{Name: name, Batch: func(uint64) { log = append(log, name) }}
+	}
+	s := schedule{repeats: 4, innerLoops: 1}
+	samples := measureInTurn([]Candidate{mk("a"), mk("b"), mk("c")}, s)
+	if got, want := strings.Join(log, ""), "abccbaabccba"; got != want {
+		t.Errorf("order: got %s, want %s", got, want)
+	}
+	if len(samples) != 3 {
+		t.Fatalf("expected one series per candidate, got %d", len(samples))
+	}
+	for i, series := range samples {
+		if len(series) != 4 {
+			t.Errorf("series %d has %d samples, want 4", i, len(series))
+		}
 	}
 }
 
@@ -215,7 +289,7 @@ func TestCollectSetupTeardownRunDuringWarmup(t *testing.T) {
 		Batch:    func(uint64) {},
 		Teardown: func() { teardowns++ },
 	}
-	if _, _, err := Collect(c, noopCandidate(), CollectOptions{Repeats: 11, InnerLoops: 1, Warmup: 2}); err != nil {
+	if _, _, err := Collect(c, noopCandidate(), CollectOptions{Repeats: 11, InnerLoops: 1, Warmup: 2, WarmupDuration: time.Nanosecond}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if want := 13; setups != want || teardowns != want {

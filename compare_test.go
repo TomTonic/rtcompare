@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 var compareSink uint64
@@ -39,9 +40,13 @@ func scaledCandidate(name string, mult uint64) Candidate {
 // trials, and cost is still small: validation is the dominant cost of a
 // comparison, but these run against a fixed 20000-operation batch rather than
 // calibrating, so ten of them stay well under a second.
+//
+// The warm-up is cut to 10 ms. The default is sized for working sets near the
+// size of the last-level cache, and these candidates touch no memory at all,
+// so the default would only add 0.6 s to every comparison.
 func fastCompare() CompareOptions {
 	return CompareOptions{
-		Collect:        CollectOptions{Repeats: 51, InnerLoops: 20000},
+		Collect:        CollectOptions{Repeats: 51, InnerLoops: 20000, WarmupDuration: 10 * time.Millisecond},
 		ValidationRuns: 10,
 		Resamples:      600,
 	}
@@ -440,6 +445,26 @@ func TestReportWarnings(t *testing.T) {
 			want: "candidate B drifted",
 		},
 		{
+			name: "ratio trend larger than the resolution",
+			report: Report{
+				Validated: true, NoiseFloor: 0.01,
+				Estimate:   Estimate{Delta: -0.3, Low: -0.35, High: -0.25},
+				DriftRatio: DriftReport{N: 41, PValue: 0.001, RelativeShift: 0.12},
+			},
+			want: "had not reached a steady state",
+		},
+		{
+			name: "ratio trend smaller than the resolution",
+			report: Report{
+				Validated: true, NoiseFloor: 0.02,
+				Estimate:    Estimate{Delta: 0.5, Low: 0.4, High: 0.6},
+				DriftRatio:  DriftReport{N: 101, PValue: 0.001, RelativeShift: 0.01},
+				ValidationA: HarnessValidation{Level: 0.95},
+				ValidationB: HarnessValidation{Level: 0.95},
+			},
+			absent: "steady state",
+		},
+		{
 			name: "coarse measurement",
 			report: Report{
 				Validated: true, NoiseFloor: 0.01,
@@ -484,5 +509,47 @@ func TestReportWarnings(t *testing.T) {
 				t.Errorf("a clean report should carry no warnings, got %v", c.report.warnings())
 			}
 		})
+	}
+}
+
+// TestCompareNeverLetsOneCandidateRunAlone checks the property that keeps a
+// comparison of identical code from favouring one side: from the first
+// validation batch to the last measured one, the two candidates share the
+// machine. Compare validates both, warms both up and measures both, and any
+// stretch in which one of them runs alone for long leaves it with the caches
+// to itself (issue #111). The expectation is that no candidate ever runs more
+// than twice in a row over the whole call.
+func TestCompareNeverLetsOneCandidateRunAlone(t *testing.T) {
+	var log []string
+	mk := func(name string) Candidate {
+		work := scaledCandidate(name, 1)
+		return Candidate{Name: name, Batch: func(n uint64) {
+			log = append(log, name)
+			work.Batch(n)
+		}}
+	}
+	opt := fastCompare()
+	opt.ValidationRuns = 3
+	opt.Collect.Repeats = 11
+	opt.Collect.Warmup = 4
+	if _, err := Compare(mk("a"), mk("b"), opt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := longestRun(log); got > 2 {
+		t.Errorf("a candidate ran %d times in a row during Compare; at most 2 keeps the caches shared", got)
+	}
+}
+
+// TestPairRatios checks the series in which a head start of one candidate
+// becomes visible: the ratio B/A of neighbouring samples, pair by pair, cut to
+// the shorter input. A zero in A has to come out non-finite, so that
+// DetectDrift declines the series rather than reporting on it.
+func TestPairRatios(t *testing.T) {
+	got := pairRatios([]float64{1, 2, 4}, []float64{2, 2, 2, 9})
+	if want := []float64{2, 1, 0.5}; len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("pairRatios: got %v, want %v", got, want)
+	}
+	if _, err := DetectDrift(pairRatios([]float64{0, 1, 1, 1}, []float64{1, 1, 1, 1})); err == nil {
+		t.Error("a zero sample in A should make the ratio series unusable for DetectDrift")
 	}
 }

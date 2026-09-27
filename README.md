@@ -140,7 +140,7 @@ The individual steps, for when the summary is not enough:
 Measuring:
 
 - `Candidate` / `Batch` — one implementation under test, with optional `Setup` and `Teardown` that run outside the measured region.
-- `Collect(a, b, CollectOptions)` — runs both candidates and returns one timing sample per repeat each, ready to hand to `CompareSamples`. Owns measurement order, warm-up, GC placement and batch sizing.
+- `Collect(a, b, CollectOptions)` — runs both candidates and returns one timing sample per repeat each, ready to hand to `CompareSamples`. Owns measurement order, warm-up, GC placement and batch sizing. The warm-up alternates the candidates for at least `WarmupDuration` (300 ms by default), so that neither starts the measurement with the caches to itself.
 - `CalibrateInnerLoops(candidate, CalibrationOptions)` — sizes batches for a target quantization error. Called automatically when `CollectOptions.InnerLoops` is left at zero.
 
 Judging:
@@ -154,6 +154,7 @@ Judging:
 Checking the measurement itself:
 
 - `ValidateHarness(candidate, ValidationOptions)` — runs a candidate against itself and reports the noise floor, the tie rate, the drift rate and the autocorrelation. `Resolves(difference)` answers whether a result clears that floor. The floor is the 90th percentile of the differences observed on identical code, not their maximum, so that it converges as you validate longer instead of growing; roughly one A/A run in ten exceeds it. Validate both candidates and use the worse floor.
+- `ValidatePair(a, b, ValidationOptions)` — validates two candidates together, interleaved batch by batch, and returns one `HarnessValidation` each. Use it instead of two `ValidateHarness` calls before comparing the two: a candidate validated on its own last would start the comparison with a warm cache.
 - `DetectDrift(samples)` — tests a sample series for a trend across the run.
 
 Primitives:

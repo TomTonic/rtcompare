@@ -1,6 +1,6 @@
 module github.com/TomTonic/rtcompare
 
-go 1.26.0
+go 1.26.8
 
 require (
 	github.com/TomTonic/Set3 v0.4.2

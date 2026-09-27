@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 var validateSink uint64
@@ -306,5 +307,173 @@ func TestNoiseFloorIsAQuantileNotAMaximum(t *testing.T) {
 	// still be the ones the runs produced, in run order.
 	if len(v.Deltas) != v.Runs {
 		t.Errorf("expected %d recorded deltas, got %d", v.Runs, len(v.Deltas))
+	}
+}
+
+// longestRun returns the longest stretch of identical consecutive entries.
+func longestRun(log []string) int {
+	longest, run := 0, 0
+	for i := range log {
+		if i > 0 && log[i] == log[i-1] {
+			run++
+		} else {
+			run = 1
+		}
+		longest = max(longest, run)
+	}
+	return longest
+}
+
+// TestValidatePairInterleavesTheCandidates checks that validating two
+// candidates before comparing them does not leave either of them with the
+// caches to itself. It belongs to the A/A validation, which Compare runs for
+// both candidates before measuring them against each other; validated one after
+// the other, the second one entered the comparison warm (issue #111). The
+// expectation is that the batches of the two candidates alternate throughout,
+// so that no candidate ever runs more than twice in a row, and that each
+// candidate still gets a full validation of its own.
+func TestValidatePairInterleavesTheCandidates(t *testing.T) {
+	var log []string
+	mk := func(name string) Candidate {
+		return Candidate{Name: name, Batch: func(n uint64) {
+			log = append(log, name)
+			rng := NewDPRNG(0x2468)
+			var acc uint64
+			for range n {
+				acc ^= rng.Uint64()
+			}
+			validateSink ^= acc
+		}}
+	}
+	opt := quickValidation(3)
+	opt.Collect.WarmupDuration = time.Millisecond
+	va, vb, err := ValidatePair(mk("a"), mk("b"), opt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := longestRun(log); got > 2 {
+		t.Errorf("a candidate ran %d times in a row during the paired validation; at most 2 keeps the caches shared", got)
+	}
+	for name, v := range map[string]HarnessValidation{"a": va, "b": vb} {
+		if v.Runs != 3 || len(v.Deltas) != 3 || v.InnerLoops != opt.Collect.InnerLoops {
+			t.Errorf("candidate %s: expected 3 runs at %d inner loops, got %d runs, %d deltas, %d inner loops",
+				name, opt.Collect.InnerLoops, v.Runs, len(v.Deltas), v.InnerLoops)
+		}
+	}
+}
+
+// TestValidatePairCalibratesToTheLargerBatch checks that the two noise floors
+// describe the batch size the comparison will actually measure at. Within the
+// A/A validation, leaving InnerLoops at zero calibrates both candidates, and
+// the cheaper one needs the larger batch; the pair is expected to use that
+// larger size for both validations.
+func TestValidatePairCalibratesToTheLargerBatch(t *testing.T) {
+	opt := ValidationOptions{
+		Collect:   CollectOptions{Repeats: 11, MaxQuantizationError: 0.01, WarmupDuration: time.Millisecond},
+		Runs:      2,
+		Resamples: 300,
+	}
+	va, vb, err := ValidatePair(steadyCandidate(1), steadyCandidate(8), opt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if va.InnerLoops != vb.InnerLoops {
+		t.Errorf("the two validations used different batch sizes: %d and %d", va.InnerLoops, vb.InnerLoops)
+	}
+	cheap, err := CalibrateInnerLoops(steadyCandidate(1), CalibrationOptions{MaxQuantizationError: 0.01})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Calibration is a noisy search, so only the order of magnitude is
+	// compared: the pair must be sized for the cheap candidate, not the costly.
+	if float64(va.InnerLoops) < float64(cheap.InnerLoops)/3 {
+		t.Errorf("the pair used %d inner loops, far below the %d the cheaper candidate needs", va.InnerLoops, cheap.InnerLoops)
+	}
+}
+
+// TestValidatePairRejectsBadInput checks that a paired validation fails loudly
+// rather than measuring something unintended. It shares its option checks with
+// ValidateHarness, and is expected to name the candidate at fault when one of
+// them has no Batch function.
+func TestValidatePairRejectsBadInput(t *testing.T) {
+	good := steadyCandidate(1)
+	cases := []struct {
+		name string
+		a, b Candidate
+		opt  ValidationOptions
+		want string
+	}{
+		{"returns error for nil batch in A", Candidate{Name: "empty"}, good, quickValidation(3), `A ("empty")`},
+		{"returns error for nil batch in B", good, Candidate{Name: "empty"}, quickValidation(3), `B ("empty")`},
+		{"returns error for a single run", good, good, ValidationOptions{Runs: 1}, "at least 2"},
+		{"returns error for a bad level", good, good, ValidationOptions{Runs: 3, Level: 0.4}, "Level"},
+		{"returns error for bad collect options", good, good, ValidationOptions{Runs: 3, Collect: CollectOptions{Repeats: 3}}, "Repeats"},
+		{"returns error when calibration fails", good, Candidate{Name: "ignores n", Batch: func(uint64) { validateSink++ }},
+			ValidationOptions{Runs: 2, Collect: CollectOptions{Repeats: 11, MaxInnerLoops: 1000}}, "calibrating"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, err := ValidatePair(c.a, c.b, c.opt)
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %q does not mention %q", err.Error(), c.want)
+			}
+		})
+	}
+}
+
+// TestValidationWarmsUpForItsDurationOnlyOnce checks that a validation's cost
+// does not grow with the run count through the warm-up. Within the A/A
+// validation, only the first run is preceded by a warm-up of the full
+// duration; the later runs follow directly on the batches before them and are
+// expected to warm up by count alone.
+func TestValidationWarmsUpForItsDurationOnlyOnce(t *testing.T) {
+	s := schedule{warmupRounds: 3, warmupDuration: time.Second}
+	if got := s.forRun(0); got.warmupDuration != time.Second || got.warmupRounds != 3 {
+		t.Errorf("first run: got %+v, want the full warm-up", got)
+	}
+	if got := s.forRun(5); got.warmupDuration != 0 || got.warmupRounds != 3 {
+		t.Errorf("later run: got %+v, want the count without the duration", got)
+	}
+}
+
+// TestPairSlotsGiveBothHalvesTheSameHistory checks that a paired validation
+// measures each candidate's two A/A halves under the same conditions. Within
+// the A/A validation, what ran just before a batch changes what the caches
+// hold, so a half that more often follows its own candidate starts warmer and
+// makes identical code look different. Replaying the order the measurement
+// loop uses, each candidate's two slots are expected to be preceded by that
+// same candidate equally often.
+func TestPairSlotsGiveBothHalvesTheSameHistory(t *testing.T) {
+	var order []int // slot indices in run order
+	for round := range 8 {
+		for k := range pairSlots {
+			order = append(order, turn(k, len(pairSlots), round%2 == 0))
+		}
+	}
+	// Read cyclically: over an even number of rounds the sequence repeats, and
+	// the first batch of a run follows the last one of the warm-up, which ran
+	// in the same alternating order.
+	selfPreceded := map[int]int{}
+	for i := range order {
+		slot, before := order[i], order[(i+len(order)-1)%len(order)]
+		if pairSlots[slot] == pairSlots[before] {
+			selfPreceded[slot]++
+		}
+	}
+	halves := map[int][]int{}
+	for slot, who := range pairSlots {
+		halves[who] = append(halves[who], slot)
+	}
+	for who, slots := range halves {
+		if len(slots) != 2 {
+			t.Fatalf("candidate %d has %d slots, want 2", who, len(slots))
+		}
+		if a, b := selfPreceded[slots[0]], selfPreceded[slots[1]]; a != b {
+			t.Errorf("candidate %d: slot %d follows its own candidate %d times, slot %d %d times",
+				who, slots[0], a, slots[1], b)
+		}
 	}
 }
