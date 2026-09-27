@@ -24,6 +24,7 @@ Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, 
 - Detect a trend across a measurement run, which resampling structurally cannot see because it discards the order the samples arrived in.
 - Resample in blocks when the measurements are correlated enough that treating them as independent would overstate confidence.
 - Deterministic PRNG for reproducible inputs, and a crypto/rand-backed one where unpredictability is wanted.
+- Generate realistic insert/delete workloads for benchmarking mutable data structures (`workload`): valid by construction, reproducible from a seed, and cyclic, so that a batch can replay them endlessly without rebuilding the structure.
 
 ## What this cannot tell you
 
@@ -161,6 +162,12 @@ Primitives:
 - `DPRNG` / `CPRNG` — deterministic and cryptographic generators with `Uint64`, `Float64` and `Uint32N`.
 - `SampleTime()` / `DiffTimeStamps()` — high-resolution timestamps, and `GetSampleTimePrecision()` for the smallest interval they can resolve here.
 - `Median` / `QuickMedian` / `Statistics` — small statistics helpers.
+
+Workloads for mutable data structures (`github.com/TomTonic/rtcompare/workload`):
+
+- `workload.Cycle(target, Config)` — a stream of insertions and deletions that starts and ends with the elements 0 to target-1 present, so it can be replayed endlessly. `workload.Build(target, Config)` goes from empty to those elements with a realistic history.
+- `workload.Cursor` — the position in a cycle, kept with the data structure instance. `Batch(ops, apply)` makes an `rtcompare.Batch` that continues where the last batch stopped; `Settle` returns the structure to its start state.
+- `workload.Check(ops, start, end)` — replays a stream against a model and reports the first invalid operation.
 
 A note on the threshold of `0.0`: every threshold is evaluated as `delta >= t`, so at zero the question is "at least as fast", not "faster". Quantized timings tie often, and every tie counts towards it. Ask for a threshold above zero if you mean strictly faster.
 

@@ -133,6 +133,80 @@ cost gets measured along with your code. See
 [Attenuation](#attenuation-your-number-is-real-but-smaller-than-the-truth)
 for what this costs you.
 
+## Benchmarking insertions and deletions
+
+If your candidates are data structures and the question is how fast they
+*change* — insert, delete, grow, shrink — the obvious batch is a trap:
+
+```go
+Batch: func(n uint64) {
+    for i := range n {
+        m[key(i)] = value // insert
+        delete(m, key(i)) // and take it out again, so the map stays the same
+    }
+}
+```
+
+That measures a structure that never changes shape. The element goes into
+the same slot it just left; nothing splits, merges, resizes, rehashes or
+leaves a tombstone, and those are exactly the costs that separate one data
+structure from another in real use. The honest alternatives have their own
+traps: picking what to delete inside the timed loop adds work to both
+candidates and dilutes the difference; a stream that deletes elements that
+aren't there times no-ops; a structure that keeps growing over the run is a
+different structure at the last sample than at the first.
+
+The `workload` package generates the streams for you:
+
+```go
+ops, err := workload.Cycle(100_000, workload.Config{Seed: 1, Ratio: 2})
+```
+
+A **cycle** starts with the elements 0 to 99,999 present, inserts and deletes
+100,000 transient elements in bursts (1 to 16 insertions, then deletions scaled
+to keep about 12,500 transients present), and ends exactly where it started.
+Every operation is valid by construction: nothing is inserted twice and
+nothing is deleted that isn't there. Because the cycle returns to its start, a
+batch can simply continue where the last one stopped and wrap around at the
+end:
+
+```go
+cur := &workload.Cursor{} // belongs to this map, like the map itself
+candidate := rtcompare.Candidate{Name: "map", Batch: cur.Batch(ops, func(run []workload.Op) {
+    for _, op := range run {
+        if op.Kind == workload.Insert {
+            m[uint64(op.ID)] = struct{}{}
+        } else {
+            delete(m, uint64(op.ID))
+        }
+    }
+})}
+```
+
+The IDs are abstract. You map them to your own keys and values, for example
+through a precomputed slice of keys. Three things are worth knowing:
+
+- **The cursor belongs to the data structure, not to the batch.** If the same
+  map takes part in two comparisons, give both the same `Cursor`, and call
+  `cur.Settle(ops, apply)` outside the timed region before measuring anything
+  else on it. That brings the map back to its start state.
+- **One operation is one unit of work**, so the per-operation time rtcompare
+  reports is the average over the insertions and deletions in the stream.
+- **Play one cycle before measuring**, with `cur.Advance(ops,
+  uint64(len(ops)), apply)`. The first pass grows the structure to the
+  largest size the cycle reaches, and for a Go map of 100,000 elements parts
+  of it cost 35 to 128 ns per operation where every later pass cost 17 to 20.
+- **`workload.Build`** makes the other kind of stream. It goes from empty to
+  exactly the elements 0 to target-1, with transient elements inserted and
+  deleted along the way. Use it to build a fixture with a realistic history,
+  or to time a build.
+
+`Config.Victims` chooses which element a deletion removes: `Uniform` (the
+default, like a general-purpose map), `FIFO` (a queue or a retention window),
+or `LIFO` (a stack or undo log). `workload.Check` replays any stream against a
+model and reports the first invalid operation, for testing code that produces
+or transforms streams.
+
 ## The long version: what `Compare` does, step by step
 
 This is the sequence `Compare` runs automatically. Read it if you want to
