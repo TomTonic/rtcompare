@@ -2,6 +2,7 @@ package rtcompare
 
 import (
 	"math"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -436,13 +437,40 @@ func TestReportWarnings(t *testing.T) {
 			want: "includes zero",
 		},
 		{
-			name: "drift in one series",
+			name: "drift in one series larger than the resolution",
 			report: Report{
 				Validated: true, NoiseFloor: 0.01,
 				Estimate: Estimate{Delta: 0.5, Low: 0.4, High: 0.6},
-				DriftB:   DriftReport{N: 101, PValue: 0.0001, RelativeShift: -0.07},
+				DriftB:   DriftReport{N: 101, PValue: 0.0001, RelativeShift: -0.17},
 			},
 			want: "candidate B drifted",
+		},
+		{
+			name: "significant drift smaller than the resolution",
+			report: Report{
+				Validated: true, NoiseFloor: 0.01,
+				Estimate: Estimate{Delta: 0.05, Low: 0.04, High: 0.06},
+				DriftA:   DriftReport{N: 101, PValue: 0.0001, RelativeShift: 0.006},
+			},
+			absent: "drifted",
+		},
+		{
+			name: "large heap",
+			report: Report{
+				Validated: true, NoiseFloor: 0.01,
+				Estimate: Estimate{Delta: 0.5, Low: 0.4, High: 0.6},
+				LiveHeap: 64 << 20,
+			},
+			want: "holds 64 MB of live data",
+		},
+		{
+			name: "machine suspended",
+			report: Report{
+				Validated: true, NoiseFloor: 0.01,
+				Estimate:  Estimate{Delta: 0.5, Low: 0.4, High: 0.6},
+				Suspended: 17 * time.Minute,
+			},
+			want: "suspended for 17m0s",
 		},
 		{
 			name: "ratio trend larger than the resolution",
@@ -551,5 +579,47 @@ func TestPairRatios(t *testing.T) {
 	}
 	if _, err := DetectDrift(pairRatios([]float64{0, 1, 1, 1}, []float64{1, 1, 1, 1})); err == nil {
 		t.Error("a zero sample in A should make the ratio series unusable for DetectDrift")
+	}
+}
+
+// TestSuspendedSince checks that a comparison notices a machine that went to
+// sleep in the middle of it. Compare reads both the wall clock and the
+// monotonic clock, and a gap above SuspendThreshold between them is the time
+// spent asleep. A gap of an hour has to be reported as an hour, small gaps from
+// clock adjustments and a wall clock stepped backwards as zero, and a real
+// start time a moment ago as zero.
+func TestSuspendedSince(t *testing.T) {
+	cases := []struct {
+		name            string
+		wall, monotonic time.Duration
+		want            time.Duration
+	}{
+		{"reports an hour asleep", time.Hour + time.Minute, time.Minute, time.Hour},
+		{"ignores a gap below the threshold", time.Minute + 200*time.Millisecond, time.Minute, 0},
+		{"ignores a wall clock stepped backwards", time.Minute - 5*time.Second, time.Minute, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := suspendGap(c.wall, c.monotonic); got != c.want {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+	if got := suspendedSince(time.Now()); got != 0 {
+		t.Errorf("no pause: got %v, want 0", got)
+	}
+}
+
+// TestCompareRecordsTheLiveHeap checks that a comparison records how much
+// live data the program holds, which is what the warning about single-process
+// results is based on. The runtime reports it after its first collection, so a
+// collection is forced first; the value then has to be positive and must not
+// exceed what the runtime has obtained from the operating system.
+func TestCompareRecordsTheLiveHeap(t *testing.T) {
+	runtime.GC()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	if got := liveHeap(); got == 0 || got > ms.Sys {
+		t.Errorf("live heap %d bytes, want between 1 and %d", got, ms.Sys)
 	}
 }

@@ -453,6 +453,96 @@ The practical checks, for any comparison of large data:
 - **Do not validate candidates one at a time** before comparing them. Use
   `ValidatePair`, or `Compare`, which does.
 
+## One process is one observation
+
+Everything `Compare` reports — the interval, the noise floor, `Resolved` —
+describes the noise **within one run of your program**. Run the same program
+again and you get a new process, and a new process lays its data out in memory
+differently: different addresses, different pages, different cache sets. For
+small data that barely matters. For data larger than the caches, or full of
+pointers (trees, linked structures, maps of heap objects), it can move the
+difference between A and B by several points, and that shift is fixed for the
+whole life of the process. No amount of `Repeats` inside the process sees it,
+and the A/A validation cannot either, because both halves of an A/A run share
+the same layout.
+
+How big this gets was measured on a 1M-key ordered index
+([issue #109](https://github.com/TomTonic/rtcompare/issues/109)): the same
+comparison, repeated in separate processes, scattered 4 to 10 times more
+widely than each process's own interval said it should. One process reported
+`+14.3% [+13.2, +15.2]`, the next `+24.8%`. Merely adding an unrelated
+structure to the fixture build moved another comparison from `+2.9%` to
+`-27.3%`, both resolved with narrow intervals. Even for data that fits in the
+cache, the intervals were about twice too narrow.
+
+So the rule is: **when your data is large or pointer-heavy, one process is one
+observation.** Run several and pool them. `Compare` reminds you: when the
+program holds more than 16 MB of live data, its warnings say so.
+
+### How
+
+The `multiproc` package does all of it. You say how to build each candidate;
+it does the rest:
+
+```go
+func main() {
+    multiproc.Main(multiproc.Options{}, multiproc.Pair{
+        Name: "lookup",
+        A:    func() rtcompare.Candidate { return lookupIn(buildTreeA()) },
+        B:    func() rtcompare.Candidate { return lookupIn(buildTreeB()) },
+    })
+}
+```
+
+In a test, `multiproc.RunTest(t, multiproc.Options{}, pair)` does the same and
+returns the pooled results for your assertions.
+
+What happens behind that call, so that you don't have to remember any of it:
+
+- **Your program is started again as child processes**, one after another, so
+  they don't disturb each other. In a test, the children run only that test.
+- **Each child gets a different heap layout.** Before anything is built, it
+  fills the heap with a seeded amount of filler, so that your data lands at
+  different addresses in each process (`rtcompare.PerturbHeap`). Otherwise
+  every process would repeat the same layout, and its bias with it.
+- **The build order alternates.** Even-numbered processes build A's data
+  first, odd-numbered ones B's. This matters more than the heap: in the
+  reproduction in `cmd/rtcompare-aa`, whichever of two identical 1M-node lists
+  was built second was about 3% faster in every process, however the heap was
+  perturbed. That is also why the builders are functions: they have to run
+  inside each process, after the perturbation, in the right order. Build
+  everything the measurement depends on inside them.
+- **It stops when the answer is precise enough.** At least 5 processes, then
+  more until every comparison's pooled interval is within ±2 percentage
+  points, or within ±10% of the difference itself, and at most 20. It only
+  stops after an even number, so both build orders count equally. In the
+  measurements behind issue #109, five were enough for data in the cache and
+  13 to 15 were needed for data far out of it.
+
+Keep the machine awake while this runs: a laptop that goes to sleep pauses the
+measurement for as long as it sleeps. rtcompare notices that
+(`Report.Suspended`) but cannot give you the time back.
+
+For anything the pairs don't cover, `multiproc.Run` takes a suite function of
+your own, and still perturbs the heap and pools for you; alternate the build
+order by `p.Index` yourself there. If you run the processes by some other
+means, `rtcompare.Combine(reports, 0)` does the pooling part on its own.
+
+### Reading a pooled result
+
+`Combine` treats each process as one number, its delta, and puts a Student t
+interval around their mean. With few processes that interval is wide, and it
+should be: five observations are five observations. Next to it you get:
+
+- **`Inflation`** — how many times more the processes scatter than one
+  process's interval implies. Near 1, a single process would have told you the
+  truth. Well above 1, it would not have, and the pooled result is the one to
+  quote.
+- **`I2`** — the share of the scatter that the per-process intervals do not
+  explain. Above about 0.5, the differences between processes dominate.
+- **Warnings** — among them, when processes resolved the difference with
+  opposite signs, each of them confident.
+
 ## Troubleshooting: what to do, when
 
 This is the part of the "long protocol" that's normally invisible — the
@@ -526,6 +616,11 @@ whether the result keeps its sign.
 **Symptom:** `DriftReport.Drifted(...)` returns true, or `Report.Warnings`
 mentions a candidate that "drifted during the run."
 
+This warning only appears when the trend is both significant and larger than
+what the result can resolve (the noise floor, or half the interval, whichever
+is larger). A long run finds shifts of a tenth of a percent significant, and a
+warning that fires on nearly every run tells you nothing.
+
 **What it means:** the machine changed behavior over the course of the run —
 usually getting slower, most often from thermal throttling as sustained load
 heats up the CPU. Because measurement order is interleaved by default (ABBA),
@@ -541,6 +636,20 @@ beyond what the reported interval shows.
 - If drift keeps appearing on a machine you use often for this, treat every
   result from it with a bit more skepticism than the headline confidence
   suggests.
+
+### A warning says the machine was suspended
+
+**Symptom:** `Report.Suspended` is non-zero, or a warning says the machine
+"appears to have been suspended."
+
+**What it means:** the wall clock moved further than the monotonic clock
+during the comparison, which on Linux and macOS happens when the machine
+sleeps. The samples straddle a pause, possibly a long one, after which caches,
+clock speeds and everything else started cold.
+
+**What to do:** repeat the comparison with the machine kept awake — plugged
+in, and with `caffeinate -i` on macOS, `systemd-inhibit --what=idle:sleep` on
+Linux, or the power settings on Windows.
 
 ### The autocorrelation is high
 
@@ -656,6 +765,10 @@ package-level sink variable.
 - **Autocorrelation** — how much each measurement resembles the one right
   before it. High values mean measurements aren't fully independent of one
   another.
+- **Layout effect** — the part of a measured difference that comes from where
+  the data happens to lie in memory in this particular process, not from the
+  code. It is fixed for the life of a process and changes with the next one;
+  see [One process is one observation](#one-process-is-one-observation).
 - **Attenuation** — the true difference between two pieces of code getting
   diluted in the measured number because of fixed overhead (a loop, an
   accumulator) that both candidates carry equally. See

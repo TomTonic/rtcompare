@@ -3,7 +3,9 @@ package rtcompare
 import (
 	"fmt"
 	"math"
+	"runtime/metrics"
 	"strings"
+	"time"
 )
 
 // AutocorrelationThreshold is the lag-1 autocorrelation above which [Compare]
@@ -16,6 +18,29 @@ import (
 // 13.5% at 0.2 and 21.7% at 0.4. See [BlockBootstrapConfidence] for the full
 // tables.
 const AutocorrelationThreshold = 0.2
+
+// SuspendThreshold is how far the wall clock may run ahead of the monotonic
+// clock during a [Compare] before the machine is taken to have been suspended.
+//
+// On Linux and macOS the monotonic clock stops while the machine sleeps and the
+// wall clock does not, so the gap between them is the time spent asleep. A
+// second is far above what clock adjustments produce in the span of one
+// comparison and far below the idle sleeps that have actually paused
+// comparisons, which lasted 15 to 25 minutes.
+const SuspendThreshold = time.Second
+
+// LargeHeapThreshold is the live heap above which [Compare] warns that a
+// single process's result is not to be trusted on its own.
+//
+// Above roughly the size of a last-level cache, where the data lies in memory
+// starts to decide how fast it is, and that placement is fixed for a process
+// and different in the next. Measured on 1M-node lists, processes scattered 4.5
+// times as widely as their own intervals said. The threshold sits at the lower
+// end of common last-level caches, so that the warning comes early rather than
+// late; it is a hint drawn from the heap as a whole, not a measurement of what
+// the candidates touch, and can fire for a program that holds much memory the
+// candidates never read.
+const LargeHeapThreshold = 16 << 20
 
 // CompareOptions configures [Compare]. The zero value is usable and selects the
 // documented defaults throughout.
@@ -70,6 +95,13 @@ type Report struct {
 
 	// Estimate is how much smaller A is than B, with an interval around it.
 	// Positive means A is faster.
+	//
+	// The interval covers the noise within this one process and nothing else.
+	// Each process gets its own memory layout, and for data larger than the
+	// caches or full of pointers that layout alone can shift the difference by
+	// several points, far beyond this interval, and differently in the next
+	// process. Where that matters, run the comparison in several processes and
+	// read [Combine]'s pooled interval instead; see the multiproc package.
 	Estimate Estimate
 
 	// Confidence maps each requested threshold to the confidence that it is
@@ -99,6 +131,20 @@ type Report struct {
 	// DriftA and DriftB test each series for a trend across the run. A zero N
 	// means the test could not be run.
 	DriftA, DriftB DriftReport
+
+	// LiveHeap is the live heap in bytes as of the last garbage collection
+	// during the comparison, zero if the runtime did not report it. Above
+	// [LargeHeapThreshold] the warnings recommend running the comparison in
+	// several processes.
+	LiveHeap uint64
+
+	// Suspended is how much longer the wall clock ran than the monotonic clock
+	// during the comparison, when that exceeded [SuspendThreshold], and zero
+	// otherwise. Non-zero means the machine was asleep for about that long in
+	// the middle of the measurement, which neither the samples nor the drift
+	// tests can show reliably. See SuspendThreshold for the platforms this
+	// works on.
+	Suspended time.Duration
 
 	// DriftRatio tests the ratio B/A of each pair of neighbouring batches for a
 	// trend across the run. A zero N means the test could not be run.
@@ -242,6 +288,7 @@ func sortedKeys(m map[float64]float64) []float64 {
 // fails, if any threshold is NaN, or if the underlying measurement or
 // validation fails. See [Collect] for the option-validation errors.
 func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
+	start := time.Now()
 	if a.Batch == nil {
 		return Report{}, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", a.label("A"))
 	}
@@ -336,8 +383,39 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 	// zero, and it must be larger than what this setup invents from identical
 	// code. Neither implies the other.
 	r.Resolved = est.Excludes(0) && math.Abs(est.Delta) > r.NoiseFloor
+	r.Suspended = suspendedSince(start)
+	r.LiveHeap = liveHeap()
 	r.Warnings = r.warnings()
 	return r, nil
+}
+
+// suspendedSince returns how much further the wall clock has moved than the
+// monotonic clock since start, if that exceeds SuspendThreshold. Round(0)
+// strips the monotonic reading, which leaves the two subtractions measuring
+// the same interval on the two clocks.
+func suspendedSince(start time.Time) time.Duration {
+	return suspendGap(time.Now().Round(0).Sub(start.Round(0)), time.Since(start))
+}
+
+// liveHeap reads the live heap as of the last garbage collection. It is used
+// rather than the heap in use, which includes garbage not yet collected, and
+// rather than forcing a collection, which would be a side effect of Compare.
+func liveHeap() uint64 {
+	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	metrics.Read(sample)
+	if sample[0].Value.Kind() != metrics.KindUint64 {
+		return 0
+	}
+	return sample[0].Value.Uint64()
+}
+
+// suspendGap is the decision behind suspendedSince, apart from the clocks so
+// that it can be tested.
+func suspendGap(wall, monotonic time.Duration) time.Duration {
+	if gap := wall - monotonic; gap > SuspendThreshold {
+		return gap
+	}
+	return 0
 }
 
 // pairRatios returns b[i]/a[i] for each pair of samples taken next to each
@@ -377,14 +455,29 @@ func (r Report) warnings() []string {
 			r.Estimate.Low*100, r.Estimate.High*100))
 	}
 
+	if r.LiveHeap > LargeHeapThreshold {
+		w = append(w, fmt.Sprintf(
+			"the program holds %d MB of live data, more than the caches of many machines; for data that size, where it lies in memory can shift the result by several points in ways the interval does not cover, and differently in the next process; run the comparison in several processes with the multiproc package",
+			r.LiveHeap>>20))
+	}
+
+	if r.Suspended > 0 {
+		w = append(w, fmt.Sprintf(
+			"the machine appears to have been suspended for %s during the comparison; its samples straddle the pause, so repeat it with the machine kept awake",
+			r.Suspended.Round(time.Second)))
+	}
+
 	// Drift is a warning rather than a veto: interleaving the measurement order
 	// means a trend hits both candidates about equally, so it inflates the
-	// spread more than it biases the comparison.
+	// spread more than it biases the comparison. It is only worth a warning
+	// when it is large enough to matter to this result; a long run finds
+	// shifts of a tenth of a percent significant, and a warning that fires on
+	// nearly every run tells nobody anything.
 	for _, d := range []struct {
 		name string
 		rep  DriftReport
 	}{{"A", r.DriftA}, {"B", r.DriftB}} {
-		if d.rep.N > 0 && d.rep.Drifted(DriftLevel) {
+		if d.rep.N > 0 && d.rep.Drifted(DriftLevel) && math.Abs(d.rep.RelativeShift) > r.resolution() {
 			w = append(w, fmt.Sprintf(
 				"candidate %s drifted during the run, shifting %+.2f%% from its first half to its second; the machine did not hold still",
 				d.name, d.rep.RelativeShift*100))
