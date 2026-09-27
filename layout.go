@@ -52,8 +52,10 @@ const perturbLargeMax = 16 << 20
 // were collected, their memory could be handed to the code under test and the
 // perturbation would partly undo itself.
 //
-// Call it at the start of a process, before building the data the candidates
-// work on. The problem it addresses is that a Go program's heap layout is
+// The multiproc package calls it in every child process before the suite
+// runs, so that code using multiproc never needs to. Call it yourself only
+// when running processes by other means, at the start of a process, before
+// building the data the candidates work on. The problem it addresses is that a Go program's heap layout is
 // deterministic: the same allocations in the same order give much the same
 // addresses in every run. For data larger than the caches or full of pointers,
 // that layout moves a measured difference by several points, and a program

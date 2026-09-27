@@ -2,6 +2,7 @@ package rtcompare
 
 import (
 	"math"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -454,6 +455,15 @@ func TestReportWarnings(t *testing.T) {
 			absent: "drifted",
 		},
 		{
+			name: "large heap",
+			report: Report{
+				Validated: true, NoiseFloor: 0.01,
+				Estimate: Estimate{Delta: 0.5, Low: 0.4, High: 0.6},
+				LiveHeap: 64 << 20,
+			},
+			want: "holds 64 MB of live data",
+		},
+		{
 			name: "machine suspended",
 			report: Report{
 				Validated: true, NoiseFloor: 0.01,
@@ -597,5 +607,19 @@ func TestSuspendedSince(t *testing.T) {
 	}
 	if got := suspendedSince(time.Now()); got != 0 {
 		t.Errorf("no pause: got %v, want 0", got)
+	}
+}
+
+// TestCompareRecordsTheLiveHeap checks that a comparison records how much
+// live data the program holds, which is what the warning about single-process
+// results is based on. The runtime reports it after its first collection, so a
+// collection is forced first; the value then has to be positive and must not
+// exceed what the runtime has obtained from the operating system.
+func TestCompareRecordsTheLiveHeap(t *testing.T) {
+	runtime.GC()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	if got := liveHeap(); got == 0 || got > ms.Sys {
+		t.Errorf("live heap %d bytes, want between 1 and %d", got, ms.Sys)
 	}
 }

@@ -3,6 +3,7 @@ package rtcompare
 import (
 	"fmt"
 	"math"
+	"runtime/metrics"
 	"strings"
 	"time"
 )
@@ -27,6 +28,19 @@ const AutocorrelationThreshold = 0.2
 // comparison and far below the idle sleeps that have actually paused
 // comparisons, which lasted 15 to 25 minutes.
 const SuspendThreshold = time.Second
+
+// LargeHeapThreshold is the live heap above which [Compare] warns that a
+// single process's result is not to be trusted on its own.
+//
+// Above roughly the size of a last-level cache, where the data lies in memory
+// starts to decide how fast it is, and that placement is fixed for a process
+// and different in the next. Measured on 1M-node lists, processes scattered 4.5
+// times as widely as their own intervals said. The threshold sits at the lower
+// end of common last-level caches, so that the warning comes early rather than
+// late; it is a hint drawn from the heap as a whole, not a measurement of what
+// the candidates touch, and can fire for a program that holds much memory the
+// candidates never read.
+const LargeHeapThreshold = 16 << 20
 
 // CompareOptions configures [Compare]. The zero value is usable and selects the
 // documented defaults throughout.
@@ -117,6 +131,12 @@ type Report struct {
 	// DriftA and DriftB test each series for a trend across the run. A zero N
 	// means the test could not be run.
 	DriftA, DriftB DriftReport
+
+	// LiveHeap is the live heap in bytes as of the last garbage collection
+	// during the comparison, zero if the runtime did not report it. Above
+	// [LargeHeapThreshold] the warnings recommend running the comparison in
+	// several processes.
+	LiveHeap uint64
 
 	// Suspended is how much longer the wall clock ran than the monotonic clock
 	// during the comparison, when that exceeded [SuspendThreshold], and zero
@@ -364,6 +384,7 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 	// code. Neither implies the other.
 	r.Resolved = est.Excludes(0) && math.Abs(est.Delta) > r.NoiseFloor
 	r.Suspended = suspendedSince(start)
+	r.LiveHeap = liveHeap()
 	r.Warnings = r.warnings()
 	return r, nil
 }
@@ -374,6 +395,18 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 // the same interval on the two clocks.
 func suspendedSince(start time.Time) time.Duration {
 	return suspendGap(time.Now().Round(0).Sub(start.Round(0)), time.Since(start))
+}
+
+// liveHeap reads the live heap as of the last garbage collection. It is used
+// rather than the heap in use, which includes garbage not yet collected, and
+// rather than forcing a collection, which would be a side effect of Compare.
+func liveHeap() uint64 {
+	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	metrics.Read(sample)
+	if sample[0].Value.Kind() != metrics.KindUint64 {
+		return 0
+	}
+	return sample[0].Value.Uint64()
 }
 
 // suspendGap is the decision behind suspendedSince, apart from the clocks so
@@ -420,6 +453,12 @@ func (r Report) warnings() []string {
 		w = append(w, fmt.Sprintf(
 			"the interval [%.2f%%, %.2f%%] includes zero, so a difference in either direction is consistent with these measurements",
 			r.Estimate.Low*100, r.Estimate.High*100))
+	}
+
+	if r.LiveHeap > LargeHeapThreshold {
+		w = append(w, fmt.Sprintf(
+			"the program holds %d MB of live data, more than the caches of many machines; for data that size, where it lies in memory can shift the result by several points in ways the interval does not cover, and differently in the next process; run the comparison in several processes with the multiproc package",
+			r.LiveHeap>>20))
 	}
 
 	if r.Suspended > 0 {

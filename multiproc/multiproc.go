@@ -7,42 +7,28 @@
 // difference by several points. The interval of a single [rtcompare.Report]
 // cannot see this: the next process reports a different, equally narrow
 // interval somewhere else (issue #109). The remedy is to treat one process as
-// one observation. [Run] re-executes the current binary as child processes,
-// gives each child its own seed for perturbing its heap and an index for
-// alternating the order in which it builds its data, collects the reports each
-// child records, and pools them per comparison with [rtcompare.Combine]. It
-// keeps starting processes until every pooled interval is precise enough,
-// within bounds.
+// one observation.
 //
-// Alternate the build order, don't leave it fixed. Whichever of two identical
-// data structures is built second can be consistently a few percent faster, in
-// every process and however the heap was perturbed; in the reproduction in
-// cmd/rtcompare-aa it was 3% for two 1M-node lists. Giving each candidate the
-// last position in half of the processes turns that into scatter the pooled
-// interval covers. With two fixtures, alternate by Process.Index, which balances
-// exactly; with many, shuffle them with Process.Rand.
+// Everything that takes is done here, so that none of it has to be remembered:
+// the program is started again as child processes, one at a time; each child
+// perturbs its heap from its own seed before anything is built; the two
+// candidates' data is built in an order that alternates between processes,
+// since whichever is built second can be consistently a few percent faster;
+// the reports are pooled per comparison with [rtcompare.Combine]; and
+// processes keep being started until every pooled interval is precise enough.
 //
-// The whole suite runs in each child, so a program looks like this:
+// A program needs nothing but the comparisons:
 //
 //	func main() {
-//		res, err := multiproc.Run(multiproc.Options{}, func(p *multiproc.Process) error {
-//			defer p.PerturbHeap().KeepAlive()
-//			a, b := buildFixtures(p.Index%2 == 1) // true: build b's data first
-//			rep, err := rtcompare.Compare(candidateA(a), candidateB(b), rtcompare.CompareOptions{})
-//			if err != nil {
-//				return err
-//			}
-//			p.Record("lookup", rep)
-//			return nil
+//		multiproc.Main(multiproc.Options{}, multiproc.Pair{
+//			Name: "lookup",
+//			A:    func() rtcompare.Candidate { return lookupIn(buildTreeA()) },
+//			B:    func() rtcompare.Candidate { return lookupIn(buildTreeB()) },
 //		})
-//		if err != nil {
-//			log.Fatal(err)
-//		}
-//		if res.Child {
-//			return // this process was one of the measured children
-//		}
-//		fmt.Println(res)
 //	}
+//
+// In a test, [RunTest] does the same and returns the results for assertions.
+// [Run] takes an arbitrary suite for anything the pairs do not cover.
 package multiproc
 
 import (
@@ -144,8 +130,9 @@ type Process struct {
 	// Index counts the processes of a run from zero.
 	Index int
 
-	// Seed is this process's seed. PerturbHeap and Rand are derived from it, so
-	// a process can be repeated by running the suite again with the same seed.
+	// Seed is this process's seed. The heap perturbation Run applies before
+	// the suite and Rand are derived from it, so a process can be repeated by
+	// running the suite again with the same seed.
 	Seed uint64
 
 	records []record
@@ -156,13 +143,6 @@ type Process struct {
 // one process records two observations of it.
 func (p *Process) Record(name string, r rtcompare.Report) {
 	p.records = append(p.records, newRecord(name, r))
-}
-
-// PerturbHeap perturbs this process's heap layout from its seed; see
-// [rtcompare.PerturbHeap]. Call it first, before building any data, and keep
-// the result alive until the measurements are done.
-func (p *Process) PerturbHeap() *rtcompare.Spacers {
-	return rtcompare.PerturbHeap(p.Seed)
 }
 
 // Rand returns a generator seeded from this process's seed, independent of the
@@ -244,11 +224,13 @@ func (r Results) String() string {
 // otherwise, waits for it, and repeats, one process at a time so that they do
 // not disturb each other. Once MinProcesses have run it stops as soon as every
 // comparison's pooled interval meets the precision in Options at the end of a
-// whole Rotation, and in any case after MaxProcesses. It returns the pooled results. In a child, Run calls
-// suite once, hands its records to the parent through a file, and returns
-// Results with Child set; the caller should then return without doing anything
-// else, since the parent does the reporting. The children find out which they
-// are from environment variables that Run sets for them.
+// whole Rotation, and in any case after MaxProcesses. It returns the pooled
+// results. In a child, Run perturbs the heap from the process's seed (see
+// [rtcompare.PerturbHeap]), calls suite once, hands its records to the parent
+// through a file, and returns Results with Child set; the caller should then
+// return without doing anything else, since the parent does the reporting.
+// [Main] and [RunTest] take care of that. The children find out which they are
+// from environment variables that Run sets for them.
 //
 // Use it for any comparison whose data is larger than the caches or full of
 // pointers, where a single process's interval is known to be several times too
@@ -446,7 +428,12 @@ func runChild(out string, suite func(*Process) error) error {
 		return fmt.Errorf("multiproc: child started without a valid %s: %w", envIndex, err)
 	}
 	p := &Process{Index: index, Seed: seed}
+	// Before anything the suite builds, so that its data lands at addresses
+	// that differ from one process to the next; kept alive until the suite is
+	// done, so that the filler's memory is not handed to the code under test.
+	spacers := rtcompare.PerturbHeap(seed)
 	suiteErr := suite(p)
+	spacers.KeepAlive()
 	f := childFile{Records: p.records}
 	if suiteErr != nil {
 		f.Error = suiteErr.Error()

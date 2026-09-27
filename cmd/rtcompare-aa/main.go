@@ -127,9 +127,11 @@ func run(c config) error {
 	}
 }
 
-// runMulti runs -mode compare in several processes. Each child perturbs its
-// heap from its own seed, so that the processes sample different layouts
-// instead of repeating one, and the build order alternates between processes.
+// runMulti runs -mode compare in several processes. multiproc perturbs each
+// child's heap from its own seed, so that the processes sample different
+// layouts instead of repeating one, and the build order alternates between
+// processes. It uses Run with its own suite rather than Pairs, because it
+// builds the two fixtures once and compares them in both role assignments.
 // Alternating rather than drawing it at random matters: whichever fixture is
 // built second is consistently a few percent faster here, and a random draw
 // over a handful of processes is rarely balanced.
@@ -142,7 +144,7 @@ func runMulti(c config) error {
 			fmt.Fprintf(os.Stderr, "process %d done\n", r.Processes)
 		},
 	}, func(p *multiproc.Process) error {
-		defer p.PerturbHeap().KeepAlive()
+		// multiproc has already perturbed this process's heap.
 		c.order = [2]string{"ab", "ba"}[p.Index%2]
 		fa, fb, err := build(c, p.Rand())
 		if err != nil {

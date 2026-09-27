@@ -160,10 +160,11 @@ Checking the measurement itself:
 - `ValidatePair(a, b, ValidationOptions)` — validates two candidates together, interleaved batch by batch, and returns one `HarnessValidation` each. Use it instead of two `ValidateHarness` calls before comparing the two: a candidate validated on its own last would start the comparison with a warm cache.
 - `DetectDrift(samples)` — tests a sample series for a trend across the run.
 - `Report.Suspended` — how long the machine slept during a `Compare`, from the gap between the wall clock and the monotonic clock.
+- `Report.LiveHeap` — the program's live data; above 16 MB, `Compare` warns that one process is not enough and points to `multiproc`.
 
 Across processes:
 
-- `multiproc.Run(Options, suite)` — re-executes the program as child processes, one at a time, each with its own seed, and pools what each records per named comparison. It stops once every pooled interval is within ±2 points or ±10% of the difference, after at least 5 and at most 20 processes.
+- `multiproc.Main(Options, pairs...)` / `multiproc.RunTest(t, Options, pairs...)` — the whole job in one call: each `Pair` says how to build candidate A and B, and the program is re-executed as child processes, one at a time, each with its own heap layout and with the build order alternating, until every pooled interval is within ±2 points or ±10% of the difference (at least 5, at most 20 processes). `multiproc.Run(Options, suite)` does the same for a suite function of your own.
 - `Combine(reports, level)` — pools per-process reports of one comparison into a `Pooled` result: a t interval over the per-process deltas, plus how far the processes scatter beyond their own intervals (`Inflation`, Cochran's Q, I²).
 - `PerturbHeap(seed)` — allocates seeded filler in every small size class and one large block, so that data built afterwards lands at different addresses in each process.
 

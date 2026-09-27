@@ -476,72 +476,57 @@ structure to the fixture build moved another comparison from `+2.9%` to
 cache, the intervals were about twice too narrow.
 
 So the rule is: **when your data is large or pointer-heavy, one process is one
-observation.** Run several and pool them.
+observation.** Run several and pool them. `Compare` reminds you: when the
+program holds more than 16 MB of live data, its warnings say so.
 
 ### How
 
-The `multiproc` package does it for you. It starts your program again as child
-processes, one after another, and gives each a seed. Each child perturbs its
-heap from that seed and builds its fixtures in an order drawn from it, so that
-every process samples a *different* layout instead of repeating the same one.
-The parent collects what each child recorded and pools it:
+The `multiproc` package does all of it. You say how to build each candidate;
+it does the rest:
 
 ```go
-res, err := multiproc.Run(multiproc.Options{}, func(p *multiproc.Process) error {
-    defer p.PerturbHeap().KeepAlive() // first, before building anything
-
-    if p.Index%2 == 0 { // alternate which fixture is built last
-        buildA()
-        buildB()
-    } else {
-        buildB()
-        buildA()
-    }
-
-    report, err := rtcompare.Compare(candidateA, candidateB, rtcompare.CompareOptions{})
-    if err != nil {
-        return err
-    }
-    p.Record("lookup", report)
-    return nil
-})
-if err != nil {
-    panic(err)
+func main() {
+    multiproc.Main(multiproc.Options{}, multiproc.Pair{
+        Name: "lookup",
+        A:    func() rtcompare.Candidate { return lookupIn(buildTreeA()) },
+        B:    func() rtcompare.Candidate { return lookupIn(buildTreeB()) },
+    })
 }
-if res.Child {
-    return // this process was one of the measured children; the parent reports
-}
-fmt.Println(res)
 ```
 
-It runs at least 5 processes and keeps going until every comparison's pooled
-interval is within ±2 percentage points, or within ±10% of the difference
-itself, up to 20 processes. It only stops after an even number, so that the
-two build orders are represented equally; `Options.Rotation` changes that for
-suites that alternate between more than two. In the measurements behind issue #109, five were
-enough for data in the cache and 13 to 15 were needed for data far out of it.
+In a test, `multiproc.RunTest(t, multiproc.Options{}, pair)` does the same and
+returns the pooled results for your assertions.
+
+What happens behind that call, so that you don't have to remember any of it:
+
+- **Your program is started again as child processes**, one after another, so
+  they don't disturb each other. In a test, the children run only that test.
+- **Each child gets a different heap layout.** Before anything is built, it
+  fills the heap with a seeded amount of filler, so that your data lands at
+  different addresses in each process (`rtcompare.PerturbHeap`). Otherwise
+  every process would repeat the same layout, and its bias with it.
+- **The build order alternates.** Even-numbered processes build A's data
+  first, odd-numbered ones B's. This matters more than the heap: in the
+  reproduction in `cmd/rtcompare-aa`, whichever of two identical 1M-node lists
+  was built second was about 3% faster in every process, however the heap was
+  perturbed. That is also why the builders are functions: they have to run
+  inside each process, after the perturbation, in the right order. Build
+  everything the measurement depends on inside them.
+- **It stops when the answer is precise enough.** At least 5 processes, then
+  more until every comparison's pooled interval is within ±2 percentage
+  points, or within ±10% of the difference itself, and at most 20. It only
+  stops after an even number, so both build orders count equally. In the
+  measurements behind issue #109, five were enough for data in the cache and
+  13 to 15 were needed for data far out of it.
+
 Keep the machine awake while this runs: a laptop that goes to sleep pauses the
 measurement for as long as it sleeps. rtcompare notices that
 (`Report.Suspended`) but cannot give you the time back.
 
-Two details matter:
-
-- **Perturb, and alternate the build order.** Repeating the same program
-  gives much the same layout every time, so the processes would repeat one
-  biased layout and pooling would average nothing away. The build order
-  matters even more than the heap: in the reproduction in `cmd/rtcompare-aa`,
-  whichever of two identical 1M-node lists was built second was about 3%
-  faster in every process, and `PerturbHeap` did not change that. So give each
-  candidate's data the "built last" position in half of the processes,
-  alternating by `p.Index` as above. With many fixtures, shuffle their order
-  with `p.Rand().Shuffle`; with two, a random draw over a handful of processes
-  is rarely balanced.
-- **In a test, run only that test in the children:**
-  `Args: []string{"-test.run=^" + regexp.QuoteMeta(t.Name()) + "$"}`.
-  Otherwise every child runs every test in the package.
-
-If you run the processes yourself, `rtcompare.Combine(reports, 0)` does the
-pooling part on its own.
+For anything the pairs don't cover, `multiproc.Run` takes a suite function of
+your own, and still perturbs the heap and pools for you; alternate the build
+order by `p.Index` yourself there. If you run the processes by some other
+means, `rtcompare.Combine(reports, 0)` does the pooling part on its own.
 
 ### Reading a pooled result
 
