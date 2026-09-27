@@ -19,11 +19,21 @@
 //  3. State drift across batches. rtcompare calls a batch many times, and a
 //     structure that grows or shrinks without bound is a different structure at
 //     the last sample than at the first. A [Cycle] ends exactly in its start
-//     state, so a [Cursor] can replay it endlessly without an untimed rebuild.
+//     state, so a [Replay] can repeat it endlessly without an untimed rebuild.
 //  4. Shared state across comparisons. The position in a cycle belongs to the
-//     data structure instance, not to the batch closure. A Cursor carries it,
-//     and [Cursor.Settle] brings the structure back to its start state before
-//     anything else is measured on it.
+//     data structure instance, not to the batch closure. A [Replay] carries
+//     it with the structure, and [Replay.Settle] brings the structure back to
+//     its start state before anything else is measured on it.
+//
+// Two more traps sit in the measurement itself. The first pass of a cycle is
+// where a structure grows to its peak size, a one-time cost that must neither
+// be spread over a steady-state measurement nor be dropped. And whichever of
+// two structures is built last starts ahead.
+//
+// [Compare] does all of this in one call and answers the two questions a
+// mutation benchmark has, what an operation costs in steady state and what a
+// build costs, separately. [Cycle], [Build], [Replay], [Cursor] and [Check]
+// are the parts it is made of, for setups it does not cover.
 //
 // The generator works on abstract element IDs; the caller maps them to its own
 // keys and values. IDs 0 to target-1 are the elements the structure holds at
@@ -179,7 +189,7 @@ func Build(target int, c Config) ([]Op, error) {
 // more elements than fit in a uint32 ID.
 //
 // Use it for steady-state mutation benchmarks: build the structure with the
-// IDs 0 to target-1, then replay the cycle through a [Cursor] in the batch.
+// IDs 0 to target-1, then replay the cycle through a [Replay] in the batch.
 // Because the cycle ends in its start state, a batch can wrap around to the
 // beginning, and the structure the last sample measures is the one the first
 // sample measured. At 1M elements and r = 2 a cycle has 2M operations and

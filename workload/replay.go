@@ -39,12 +39,8 @@ func (c *Cursor) Position() int { return c.pos }
 // per-operation cost rtcompare reports is the average of the insertions and
 // deletions in the stream.
 //
-// Play one full cycle through Advance before measuring. The first pass is
-// where the structure grows to the largest size the cycle reaches, and it is
-// far more expensive than every pass after it: for a Go map of 100,000
-// elements at Ratio 2, stretches of the first pass cost 35 to 128 ns per
-// operation where later passes cost 17 to 20. That growth happens once in a
-// program's life and does not belong in a steady-state measurement.
+// Prefer [Replay], which also plays the first pass untimed; with a bare Cursor
+// that is up to the caller, see [Replay] for why it matters.
 //
 //	cur := &workload.Cursor{}
 //	candidate := rtcompare.Candidate{Name: "map", Batch: cur.Batch(ops, func(run []workload.Op) {
@@ -107,7 +103,15 @@ func (c *Cursor) Settle(ops []Op, apply func([]Op)) {
 // [Build] stream over target elements, start is empty and end is 0 to
 // target-1; for a [Cycle], both are 0 to target-1.
 func Check(ops []Op, start, end []uint32) error {
-	present := make(map[uint32]struct{}, len(start))
+	// Sized for the largest the model can get, so that it never grows while
+	// the stream is replayed.
+	inserts := 0
+	for _, op := range ops {
+		if op.Kind == Insert {
+			inserts++
+		}
+	}
+	present := make(map[uint32]struct{}, len(start)+inserts)
 	for _, id := range start {
 		if _, dup := present[id]; dup {
 			return fmt.Errorf("workload: start lists element %d twice", id)
@@ -153,4 +157,62 @@ func compareEnd(present map[uint32]struct{}, end []uint32) error {
 		return fmt.Errorf("workload: %d elements are present at the end that should not be, the first being %d", len(extra), extra[0])
 	}
 	return nil
+}
+
+// Replay plays a [Cycle] on one data structure instance. It bundles the
+// stream, the function that applies operations to the structure, and the
+// position in the cycle, so that they cannot be mismatched: create one Replay
+// per structure instance, next to the structure.
+//
+// It also takes care of the first pass. That pass is where the structure grows
+// to the largest size the cycle reaches, and it costs far more than every pass
+// after it: for a Go map of 100,000 elements at Ratio 2, stretches of the first
+// pass cost 35 to 128 ns per operation where later passes cost 17 to 20. That
+// growth happens once in a program's life and would otherwise be spread over
+// the measurement, in proportions that depend on how long it ran. The
+// candidate from [Replay.Candidate] therefore plays one full cycle, untimed,
+// before its first measured batch. What the growth costs is a question of its
+// own, which [Compare] answers separately with a [Build] stream.
+type Replay struct {
+	ops    []Op
+	apply  func([]Op)
+	cursor Cursor
+	primed bool
+}
+
+// NewReplay returns a Replay of ops, a stream from [Cycle], applied to one
+// structure through apply. apply receives contiguous runs of the stream, so
+// that its loop over them sits where the compiler can inline the structure's
+// methods; see [Cursor.Batch].
+func NewReplay(ops []Op, apply func([]Op)) *Replay {
+	return &Replay{ops: ops, apply: apply}
+}
+
+// Prime plays one full cycle, untimed, the first time it is called, and does
+// nothing after that. The candidate calls it before its first batch; call it
+// yourself only when driving the replay by other means.
+func (r *Replay) Prime() {
+	if r.primed {
+		return
+	}
+	r.primed = true
+	r.cursor.Advance(r.ops, uint64(len(r.ops)), r.apply)
+}
+
+// Candidate returns an [rtcompare.Candidate] that replays the cycle, continuing
+// where the previous batch stopped. Its Setup primes the structure before the
+// first batch, outside the measured region, and does nothing after that.
+func (r *Replay) Candidate(name string) rtcompare.Candidate {
+	return rtcompare.Candidate{
+		Name:  name,
+		Setup: r.Prime,
+		Batch: func(n uint64) { r.cursor.Advance(r.ops, n, r.apply) },
+	}
+}
+
+// Settle plays the rest of the cycle, so that the structure is back in the
+// state the cycle starts from. Call it before measuring anything else on the
+// structure.
+func (r *Replay) Settle() {
+	r.cursor.Settle(r.ops, r.apply)
 }

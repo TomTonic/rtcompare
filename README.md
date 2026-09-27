@@ -24,7 +24,7 @@ Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, 
 - Detect a trend across a measurement run, which resampling structurally cannot see because it discards the order the samples arrived in.
 - Resample in blocks when the measurements are correlated enough that treating them as independent would overstate confidence.
 - Deterministic PRNG for reproducible inputs, and a crypto/rand-backed one where unpredictability is wanted.
-- Generate realistic insert/delete workloads for benchmarking mutable data structures (`workload`): valid by construction, reproducible from a seed, and cyclic, so that a batch can replay them endlessly without rebuilding the structure.
+- Compare mutable data structures under realistic insert/delete workloads in one call (`workload`), with separate answers for the steady state and for building to size; the streams are valid by construction, reproducible from a seed, and cyclic, so that a batch can replay them endlessly without rebuilding the structure.
 
 ## What this cannot tell you
 
@@ -165,8 +165,9 @@ Primitives:
 
 Workloads for mutable data structures (`github.com/TomTonic/rtcompare/workload`):
 
-- `workload.Cycle(target, Config)` — a stream of insertions and deletions that starts and ends with the elements 0 to target-1 present, so it can be replayed endlessly. `workload.Build(target, Config)` goes from empty to those elements with a realistic history.
-- `workload.Cursor` — the position in a cycle, kept with the data structure instance. `Batch(ops, apply)` makes an `rtcompare.Batch` that continues where the last batch stopped; `Settle` returns the structure to its start state.
+- `workload.Compare(target, a, b, Options)` — the whole job in one call: each `Structure` says how to create an empty structure and apply operations to it, and you get two reports, one for the steady state (per insertion or deletion, after one untimed cycle) and one for building from empty (per whole build, growth included).
+- `workload.Cycle(target, Config)` / `workload.Build(target, Config)` — the streams: a cycle of insertions and deletions that ends where it started, and a build from empty with a realistic history.
+- `workload.Replay` — replays a cycle on one structure instance, with the untimed first pass, and `Settle` to return it to its start state. `workload.Cursor` is the bare position, for doing it by hand.
 - `workload.Check(ops, start, end)` — replays a stream against a model and reports the first invalid operation.
 
 A note on the threshold of `0.0`: every threshold is evaluated as `delta >= t`, so at zero the question is "at least as fast", not "faster". Quantized timings tie often, and every tie counts towards it. Ask for a threshold above zero if you mean strictly faster.
