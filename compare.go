@@ -100,6 +100,17 @@ type Report struct {
 	// means the test could not be run.
 	DriftA, DriftB DriftReport
 
+	// DriftRatio tests the ratio B/A of each pair of neighbouring batches for a
+	// trend across the run. A zero N means the test could not be run.
+	//
+	// It sees what DriftA and DriftB cannot: a machine that slows down slows
+	// both candidates alike and leaves the ratio flat, while one candidate that
+	// started with the caches to itself and loses them over the run moves the
+	// ratio and nothing else. A trend here means the two had not reached a
+	// steady state when the measurement began, so the difference depends on how
+	// long the run was; see [DefaultWarmupDuration].
+	DriftRatio DriftReport
+
 	// Resolved is the short answer: the difference is both statistically
 	// distinguishable from zero and larger than what this setup invents on its
 	// own. It is deliberately conservative, and false does not mean the
@@ -172,10 +183,16 @@ func sortedKeys(m map[float64]float64) []float64 {
 //     what makes differences far below the clock's resolution measurable.
 //  2. Run each candidate against itself, repeatedly, to find out what this setup
 //     reports as a difference when there is provably none. That is the noise
-//     floor, and it is the number every result has to be read against.
-//  3. Measure the two candidates against each other, interleaved.
-//  4. Test each series for a trend across the run, which resampling cannot see
-//     because it discards the order the samples arrived in.
+//     floor, and it is the number every result has to be read against. The two
+//     candidates' validations are interleaved batch by batch, see
+//     [ValidatePair], so that neither enters the comparison with the caches to
+//     itself.
+//  3. Warm both candidates up, alternately, for at least
+//     CollectOptions.WarmupDuration, then measure them against each other,
+//     interleaved.
+//  4. Test each series, and the ratio between them, for a trend across the run,
+//     which resampling cannot see because it discards the order the samples
+//     arrived in.
 //  5. Resample in blocks if the measurements turned out to be correlated with
 //     their neighbours, and as single observations if they did not.
 //  6. Report the difference, an interval around it, and whether it clears both
@@ -198,6 +215,20 @@ func sortedKeys(m map[float64]float64) []float64 {
 // implementations at every default took about six seconds. Set SkipValidation to
 // pay only for the measurement, accepting that the result then has nothing to be
 // read against.
+//
+// Two warm-ups of CollectOptions.WarmupDuration come on top, one before the
+// validation and one before the measurement, which at [DefaultWarmupDuration] is
+// 0.6 s in all, or 0.3 s with SkipValidation.
+//
+// # What ran before it
+//
+// Whatever touched one candidate's data last before Compare, such as building
+// its fixture, starts that candidate with a warm cache. The warm-ups are there
+// to wash this out, and with a working set near the size of the last-level
+// cache they need the time they take. Building the two candidates' data in an
+// interleaved or balanced order costs nothing and removes the question. When a
+// head start survives anyway, Report.DriftRatio shows it as a trend and
+// Report.Warnings says so.
 //
 // # What it still cannot tell you
 //
@@ -236,36 +267,27 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 	// measurement have to describe the same setup, and leaving InnerLoops at
 	// zero would have each of the three runs calibrate for itself.
 	if co.InnerLoops == 0 {
-		calOpt := CalibrationOptions{
+		var err error
+		co.InnerLoops, err = calibratePair(a, b, CalibrationOptions{
 			MaxQuantizationError: co.MaxQuantizationError,
 			MaxInnerLoops:        co.MaxInnerLoops,
 			GCBetween:            co.GCBetween,
 			DisableGC:            co.DisableGC,
-		}
-		calA, err := CalibrateInnerLoops(a, calOpt)
+		})
 		if err != nil {
-			return Report{}, fmt.Errorf("calibrating candidate %s: %w", a.label("A"), err)
+			return Report{}, err
 		}
-		calB, err := CalibrateInnerLoops(b, calOpt)
-		if err != nil {
-			return Report{}, fmt.Errorf("calibrating candidate %s: %w", b.label("B"), err)
-		}
-		// The cheaper candidate needs the larger batch, so the maximum leaves
-		// both at or above the target duration.
-		co.InnerLoops = max(calA.InnerLoops, calB.InnerLoops)
 	}
 
 	r := Report{BlockLength: 1}
 
 	if !opt.SkipValidation {
+		// Together rather than one after the other: a candidate validated on
+		// its own would enter the measurement with the caches to itself.
 		vo := ValidationOptions{Collect: co, Runs: opt.ValidationRuns, Resamples: opt.Resamples}
-		va, err := ValidateHarness(a, vo)
+		va, vb, err := ValidatePair(a, b, vo)
 		if err != nil {
-			return Report{}, fmt.Errorf("validating candidate %s: %w", a.label("A"), err)
-		}
-		vb, err := ValidateHarness(b, vo)
-		if err != nil {
-			return Report{}, fmt.Errorf("validating candidate %s: %w", b.label("B"), err)
+			return Report{}, fmt.Errorf("validating candidates %s and %s: %w", a.label("A"), b.label("B"), err)
 		}
 		r.Validated = true
 		r.ValidationA, r.ValidationB = va, vb
@@ -285,6 +307,9 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 	}
 	if d, err := DetectDrift(sb); err == nil {
 		r.DriftB = d
+	}
+	if d, err := DetectDrift(pairRatios(sa, sb)); err == nil {
+		r.DriftRatio = d
 	}
 
 	// Without validation there is no A/A estimate of the dependence, so fall
@@ -313,6 +338,25 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 	r.Resolved = est.Excludes(0) && math.Abs(est.Delta) > r.NoiseFloor
 	r.Warnings = r.warnings()
 	return r, nil
+}
+
+// pairRatios returns b[i]/a[i] for each pair of samples taken next to each
+// other, which is the series a head start of one candidate shows up in. A zero
+// in a produces a non-finite ratio, which DetectDrift then declines.
+func pairRatios(a, b []float64) []float64 {
+	ratios := make([]float64, min(len(a), len(b)))
+	for i := range ratios {
+		ratios[i] = b[i] / a[i]
+	}
+	return ratios
+}
+
+// resolution is the smallest relative change that could move this report's
+// conclusion: the larger of the noise floor and half the interval's width. It
+// exists so that a trend is only worth a warning when it is large enough to
+// matter to the question asked, not merely significant.
+func (r Report) resolution() float64 {
+	return math.Max(r.NoiseFloor, (r.Estimate.High-r.Estimate.Low)/2)
 }
 
 // warnings lists the things that undermine a report, in plain sentences.
@@ -345,6 +389,15 @@ func (r Report) warnings() []string {
 				"candidate %s drifted during the run, shifting %+.2f%% from its first half to its second; the machine did not hold still",
 				d.name, d.rep.RelativeShift*100))
 		}
+	}
+
+	// Unlike drift in one series, a trend in the ratio is a bias: it means one
+	// candidate was warmer than the other for part of the run.
+	if d := r.DriftRatio; d.N > 0 && d.Drifted(DriftLevel) && math.Abs(d.RelativeShift) > r.resolution() {
+		w = append(w, fmt.Sprintf(
+			"the ratio B/A shifted %+.2f%% from the first half of the run to the second, so the candidates had not reached a steady state and the difference depends on how long the run was; "+
+				"a common cause is a head start for whichever candidate ran alone last before the comparison or had its data built last, which a longer CollectOptions.WarmupDuration removes",
+			d.RelativeShift*100))
 	}
 
 	if r.Validated {

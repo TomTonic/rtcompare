@@ -5,6 +5,7 @@ import (
 	"math"
 	"runtime"
 	"runtime/debug"
+	"time"
 )
 
 // Batch runs the code under test exactly n times.
@@ -148,9 +149,33 @@ func (o Order) String() string {
 // resolution. See CollectOptions.MaxQuantizationError.
 const DefaultRepeats = 101
 
-// DefaultWarmup is the number of unmeasured batches [Collect] runs per candidate
-// before collecting samples, when CollectOptions.Warmup is left at zero.
+// DefaultWarmup is the least number of unmeasured batches [Collect] runs per
+// candidate before collecting samples, when CollectOptions.Warmup is left at
+// zero. The warm-up also runs for at least [DefaultWarmupDuration], which is the
+// bound that usually decides how long it takes.
 const DefaultWarmup = 1
+
+// DefaultWarmupDuration is the least wall-clock time [Collect] spends warming
+// up both candidates, together, before it collects samples, when
+// CollectOptions.WarmupDuration is left at zero.
+//
+// A fixed number of batches is not a warm-up when the working set is about the
+// size of the last-level cache. Whatever ran alone last before the measurement,
+// be it an A/A validation, a calibration or the caller's own fixture build,
+// leaves the cache full of its own data. Calibrated batches are short, often a
+// fraction of a millisecond, and a whole run of them may touch too little memory
+// to turn the cache over, so the head start survives into the medians. Two
+// identical 16 MB pointer chases on a machine with 32 MB of L3 measured the
+// candidate that ran alone last 5 to 50% faster after one warm-up pair, and
+// within noise of each other after about 400 pairs of 0.3 ms batches, some
+// 250 ms in all. See issue #111 and the reproduction in cmd/rtcompare-aa.
+//
+// Time is the bound rather than a batch count because what has to happen, the
+// cache turning over, takes a roughly fixed amount of work, and batches are
+// calibrated to a duration rather than to a volume. The cost is paid once per
+// [Collect] and once per validation, not once per validation run; see
+// [ValidateHarness].
+const DefaultWarmupDuration = 300 * time.Millisecond
 
 // CollectOptions configures a [Collect] run.
 //
@@ -216,16 +241,29 @@ type CollectOptions struct {
 	// is [OrderABBA].
 	Order Order
 
-	// Warmup is the number of unmeasured batches run per candidate before sample
-	// collection starts, to fault in pages, grow stacks and train branch
+	// Warmup is the least number of unmeasured batches run per candidate before
+	// sample collection starts, to fault in pages, grow stacks and train branch
 	// predictors and caches. Zero selects [DefaultWarmup]. To run no warm-up at
 	// all, set SkipWarmup rather than passing a negative number.
+	//
+	// The warm-up continues until both this count and WarmupDuration have been
+	// reached, and it alternates the order of the candidates the way the
+	// measurement does, so that neither of them ends it with the caches to
+	// itself.
 	Warmup int
 
-	// SkipWarmup disables warm-up entirely. This exists as its own field so that
-	// Warmup keeps a single unambiguous meaning; "no warm-up" is a mode, not a
-	// count. Measuring without warm-up means the first samples include one-time
-	// costs such as page faults and stack growth.
+	// WarmupDuration is the least wall-clock time the warm-up runs for, across
+	// both candidates together. Zero selects [DefaultWarmupDuration], whose
+	// documentation explains why a count alone is not enough. Negative values
+	// are rejected. To warm up by count alone, set it to [time.Nanosecond].
+	WarmupDuration time.Duration
+
+	// SkipWarmup disables warm-up entirely, both the count and the duration.
+	// This exists as its own field so that Warmup keeps a single unambiguous
+	// meaning; "no warm-up" is a mode, not a count. Measuring without warm-up
+	// means the first samples include one-time costs such as page faults and
+	// stack growth, and that whichever candidate ran alone last before Collect
+	// starts with a warm cache.
 	SkipWarmup bool
 
 	// GCBetween requests an explicit garbage collection before every batch,
@@ -308,10 +346,18 @@ type CollectOptions struct {
 // affected all of them. Treat a result below roughly 1% as "not resolved" rather
 // than as a small but real effect.
 //
-// Collect returns an error if either candidate has a nil Batch, if Repeats or
-// Warmup is negative, if Repeats is below [MinimumDataPoints], if Order is not
-// one of the defined constants, or if automatic calibration of InnerLoops fails.
-// It does not otherwise inspect the collected samples.
+// A note on what ran before: the warm-up alternates the candidates for at least
+// CollectOptions.WarmupDuration so that neither starts the measurement with the
+// caches to itself, whichever of them the caller built, validated or calibrated
+// last. See [DefaultWarmupDuration] for why a count of batches is not enough,
+// and [ValidatePair] for validating both candidates without handing one of them
+// that head start in the first place.
+//
+// Collect returns an error if either candidate has a nil Batch, if Repeats,
+// Warmup or WarmupDuration is negative, if Repeats is below
+// [MinimumDataPoints], if Order is not one of the defined constants, or if
+// automatic calibration of InnerLoops fails. It does not otherwise inspect the
+// collected samples.
 func Collect(a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, err error) {
 	if a.Batch == nil {
 		return nil, nil, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", a.label("A"))
@@ -319,30 +365,9 @@ func Collect(a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, 
 	if b.Batch == nil {
 		return nil, nil, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", b.label("B"))
 	}
-	if opt.Repeats < 0 {
-		return nil, nil, fmt.Errorf("rtcompare: Repeats must not be negative, got %d", opt.Repeats)
-	}
-	if opt.Repeats == 0 {
-		opt.Repeats = DefaultRepeats
-	}
-	if uint64(opt.Repeats) < MinimumDataPoints {
-		return nil, nil, fmt.Errorf("rtcompare: Repeats must be at least %d, got %d", MinimumDataPoints, opt.Repeats)
-	}
-	if opt.Warmup < 0 {
-		return nil, nil, fmt.Errorf("rtcompare: Warmup must not be negative, got %d; use SkipWarmup to disable warm-up", opt.Warmup)
-	}
-	switch opt.Order {
-	case OrderABBA, OrderRandom, OrderSequential:
-	default:
-		return nil, nil, fmt.Errorf("rtcompare: unknown Order %d", int(opt.Order))
-	}
-
-	warmup := opt.Warmup
-	if warmup == 0 {
-		warmup = DefaultWarmup
-	}
-	if opt.SkipWarmup {
-		warmup = 0
+	s, err := opt.schedule()
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if opt.DisableGC {
@@ -350,68 +375,172 @@ func Collect(a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, 
 		defer debug.SetGCPercent(previous)
 	}
 
-	if opt.InnerLoops == 0 {
+	if s.innerLoops == 0 {
 		// DisableGC is already in effect for the whole call, so it is not
 		// repeated here; the rest of the conditions must match the real run.
-		calOpt := CalibrationOptions{
+		s.innerLoops, err = calibratePair(a, b, CalibrationOptions{
 			MaxQuantizationError: opt.MaxQuantizationError,
 			MaxInnerLoops:        opt.MaxInnerLoops,
 			GCBetween:            opt.GCBetween,
-		}
-		calA, err := CalibrateInnerLoops(a, calOpt)
+		})
 		if err != nil {
-			return nil, nil, fmt.Errorf("calibrating candidate %s: %w", a.label("A"), err)
+			return nil, nil, err
 		}
-		calB, err := CalibrateInnerLoops(b, calOpt)
-		if err != nil {
-			return nil, nil, fmt.Errorf("calibrating candidate %s: %w", b.label("B"), err)
-		}
-		// The cheaper candidate needs the larger batch. Using the maximum for
-		// both keeps the operation count identical and leaves both batches at
-		// or above the target duration.
-		opt.InnerLoops = max(calA.InnerLoops, calB.InnerLoops)
 	}
 
-	for range warmup {
-		runBatch(a, opt.InnerLoops, opt.GCBetween)
-		runBatch(b, opt.InnerLoops, opt.GCBetween)
+	samples := measureInTurn([]Candidate{a, b}, s)
+	return samples[0], samples[1], nil
+}
+
+// schedule is a CollectOptions with every default resolved and every check
+// passed, so that the loops that run it have nothing left to decide. It exists
+// because [Collect] and the A/A validations measure different sets of
+// candidates under the same options and must not interpret them differently.
+type schedule struct {
+	repeats        int
+	innerLoops     uint64 // zero until calibrated
+	order          Order
+	gc             bool
+	disableGC      bool
+	warmupRounds   int
+	warmupDuration time.Duration
+	seed           uint64
+}
+
+// schedule checks the options and resolves their defaults. InnerLoops is
+// passed through as it is, zero included, because calibrating it needs the
+// candidates.
+func (opt CollectOptions) schedule() (schedule, error) {
+	if opt.Repeats < 0 {
+		return schedule{}, fmt.Errorf("rtcompare: Repeats must not be negative, got %d", opt.Repeats)
 	}
+	if opt.Repeats == 0 {
+		opt.Repeats = DefaultRepeats
+	}
+	if uint64(opt.Repeats) < MinimumDataPoints {
+		return schedule{}, fmt.Errorf("rtcompare: Repeats must be at least %d, got %d", MinimumDataPoints, opt.Repeats)
+	}
+	if opt.Warmup < 0 {
+		return schedule{}, fmt.Errorf("rtcompare: Warmup must not be negative, got %d; use SkipWarmup to disable warm-up", opt.Warmup)
+	}
+	if opt.WarmupDuration < 0 {
+		return schedule{}, fmt.Errorf("rtcompare: WarmupDuration must not be negative, got %v; use SkipWarmup to disable warm-up", opt.WarmupDuration)
+	}
+	switch opt.Order {
+	case OrderABBA, OrderRandom, OrderSequential:
+	default:
+		return schedule{}, fmt.Errorf("rtcompare: unknown Order %d", int(opt.Order))
+	}
+
+	s := schedule{
+		repeats:        opt.Repeats,
+		innerLoops:     opt.InnerLoops,
+		order:          opt.Order,
+		gc:             opt.GCBetween,
+		disableGC:      opt.DisableGC,
+		warmupRounds:   opt.Warmup,
+		warmupDuration: opt.WarmupDuration,
+		seed:           opt.Seed,
+	}
+	if s.warmupRounds == 0 {
+		s.warmupRounds = DefaultWarmup
+	}
+	if s.warmupDuration == 0 {
+		s.warmupDuration = DefaultWarmupDuration
+	}
+	if opt.SkipWarmup {
+		s.warmupRounds, s.warmupDuration = 0, 0
+	}
+	return s, nil
+}
+
+// calibratePair sizes the batches for two candidates and returns the larger of
+// the two sizes. The cheaper candidate needs the larger batch, so the maximum
+// leaves both at or above the target duration while keeping the operation count
+// identical for both.
+func calibratePair(a, b Candidate, opt CalibrationOptions) (uint64, error) {
+	calA, err := CalibrateInnerLoops(a, opt)
+	if err != nil {
+		return 0, fmt.Errorf("calibrating candidate %s: %w", a.label("A"), err)
+	}
+	calB, err := CalibrateInnerLoops(b, opt)
+	if err != nil {
+		return 0, fmt.Errorf("calibrating candidate %s: %w", b.label("B"), err)
+	}
+	return max(calA.InnerLoops, calB.InnerLoops), nil
+}
+
+// measureInTurn warms the candidates up and then measures them in rounds, each
+// candidate once per round, and returns one sample series per candidate.
+//
+// It is the loop behind [Collect], generalised from two candidates to any
+// number so that the A/A validations of two candidates can be interleaved
+// rather than run one after the other; see [ValidatePair]. Each round goes
+// through the candidates forwards or backwards, as the order decides. For two
+// candidates that is exactly ABBA, Random or Sequential. For more it keeps the
+// property that matters: under ABBA every candidate holds every position equally
+// often, and none of them runs alone for longer than two batches.
+func measureInTurn(cands []Candidate, s schedule) [][]float64 {
+	if s.disableGC {
+		previous := debug.SetGCPercent(-1)
+		defer debug.SetGCPercent(previous)
+	}
+
+	warmUp(cands, s)
 
 	var rng DPRNG
-	if opt.Order == OrderRandom {
-		if opt.Seed == 0 {
+	if s.order == OrderRandom {
+		if s.seed == 0 {
 			rng = NewDPRNG()
 		} else {
-			rng = NewDPRNG(opt.Seed)
+			rng = NewDPRNG(s.seed)
 		}
 	}
 
-	samplesA = make([]float64, 0, opt.Repeats)
-	samplesB = make([]float64, 0, opt.Repeats)
-
-	for i := range opt.Repeats {
-		aFirst := true
-		switch opt.Order {
+	samples := make([][]float64, len(cands))
+	for i := range samples {
+		samples[i] = make([]float64, 0, s.repeats)
+	}
+	for round := range s.repeats {
+		forward := true
+		switch s.order {
 		case OrderABBA:
-			aFirst = i%2 == 0
+			forward = round%2 == 0
 		case OrderRandom:
 			// Uint32N uses the high bits of the scrambled state, which mix
 			// better than the low bit would.
-			aFirst = rng.Uint32N(2) == 0
+			forward = rng.Uint32N(2) == 0
 		case OrderSequential:
-			aFirst = true
+			forward = true
 		}
-
-		if aFirst {
-			samplesA = append(samplesA, runBatch(a, opt.InnerLoops, opt.GCBetween))
-			samplesB = append(samplesB, runBatch(b, opt.InnerLoops, opt.GCBetween))
-		} else {
-			samplesB = append(samplesB, runBatch(b, opt.InnerLoops, opt.GCBetween))
-			samplesA = append(samplesA, runBatch(a, opt.InnerLoops, opt.GCBetween))
+		for k := range cands {
+			j := turn(k, len(cands), forward)
+			samples[j] = append(samples[j], runBatch(cands[j], s.innerLoops, s.gc))
 		}
 	}
+	return samples
+}
 
-	return samplesA, samplesB, nil
+// warmUp runs unmeasured rounds until both the round count and the duration of
+// the schedule have been reached. It reverses the order every round, like
+// OrderABBA, because a warm-up that always ends on the same candidate hands that
+// candidate the caches.
+func warmUp(cands []Candidate, s schedule) {
+	start := time.Now()
+	for round := 0; round < s.warmupRounds || time.Since(start) < s.warmupDuration; round++ {
+		for k := range cands {
+			runBatch(cands[turn(k, len(cands), round%2 == 0)], s.innerLoops, s.gc)
+		}
+	}
+}
+
+// turn returns the index of the k-th candidate to run in a round of n, going
+// forwards or backwards.
+func turn(k, n int, forward bool) int {
+	if forward {
+		return k
+	}
+	return n - 1 - k
 }
 
 // timeBatch runs one candidate's lifecycle for a single batch of n operations
