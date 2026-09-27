@@ -25,6 +25,7 @@ Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, 
 - Resample in blocks when the measurements are correlated enough that treating them as independent would overstate confidence.
 - Run a comparison in several processes, each with its own heap layout, and pool the results into an interval that covers the scatter between processes (`multiproc`, `Combine`, `PerturbHeap`).
 - Deterministic PRNG for reproducible inputs, and a crypto/rand-backed one where unpredictability is wanted.
+- Compare mutable data structures under realistic insert/delete workloads in one call (`workload`), with separate answers for the steady state and for building to size; the streams are valid by construction, reproducible from a seed, and cyclic, so that a batch can replay them endlessly without rebuilding the structure.
 
 ## What this cannot tell you
 
@@ -173,6 +174,13 @@ Primitives:
 - `DPRNG` / `CPRNG` — deterministic and cryptographic generators with `Uint64`, `Float64` and `Uint32N`. `DPRNG.Shuffle` permutes, e.g. the order in which fixtures are built.
 - `SampleTime()` / `DiffTimeStamps()` — high-resolution timestamps, and `GetSampleTimePrecision()` for the smallest interval they can resolve here.
 - `Median` / `QuickMedian` / `Statistics` — small statistics helpers.
+
+Workloads for mutable data structures (`github.com/TomTonic/rtcompare/workload`):
+
+- `workload.Compare(target, a, b, Options)` — the whole job in one call: each `Structure` says how to create an empty structure and apply operations to it, and you get two reports, one for the steady state (per insertion or deletion, after one untimed cycle) and one for building from empty (per whole build, growth included).
+- `workload.Cycle(target, Config)` / `workload.Build(target, Config)` — the streams: a cycle of insertions and deletions that ends where it started, and a build from empty with a realistic history.
+- `workload.Replay` — replays a cycle on one structure instance, with the untimed first pass, and `Settle` to return it to its start state. `workload.Cursor` is the bare position, for doing it by hand.
+- `workload.Check(ops, start, end)` — replays a stream against a model and reports the first invalid operation.
 
 A note on the threshold of `0.0`: every threshold is evaluated as `delta >= t`, so at zero the question is "at least as fast", not "faster". Quantized timings tie often, and every tie counts towards it. Ask for a threshold above zero if you mean strictly faster.
 

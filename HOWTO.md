@@ -133,6 +133,101 @@ cost gets measured along with your code. See
 [Attenuation](#attenuation-your-number-is-real-but-smaller-than-the-truth)
 for what this costs you.
 
+## Benchmarking insertions and deletions
+
+If your candidates are data structures and the question is how fast they
+*change* — insert, delete, grow, shrink — the obvious batch is a trap:
+
+```go
+Batch: func(n uint64) {
+    for i := range n {
+        m[key(i)] = value // insert
+        delete(m, key(i)) // and take it out again, so the map stays the same
+    }
+}
+```
+
+That measures a structure that never changes shape. The element goes into
+the same slot it just left; nothing splits, merges, resizes, rehashes or
+leaves a tombstone, and those are exactly the costs that separate one data
+structure from another in real use. The honest alternatives have their own
+traps: picking what to delete inside the timed loop adds work to both
+candidates and dilutes the difference; a stream that deletes elements that
+aren't there times no-ops; a structure that keeps growing over the run is a
+different structure at the last sample than at the first.
+
+The `workload` package does all of this. You describe each data structure by
+how to create an empty one and how to apply an operation to it:
+
+```go
+goMap := workload.Structure[map[uint64]struct{}]{
+    Name: "map",
+    New:  func() map[uint64]struct{} { return make(map[uint64]struct{}, 100_000) },
+    Apply: func(m map[uint64]struct{}, run []workload.Op) {
+        for _, op := range run {
+            if op.Kind == workload.Insert {
+                m[uint64(op.ID)] = struct{}{}
+            } else {
+                delete(m, uint64(op.ID))
+            }
+        }
+    },
+}
+res, err := workload.Compare(100_000, goMap, otherSet, workload.Options{})
+fmt.Println(res)
+```
+
+The IDs are abstract; map them to your own keys and values, for example
+through a precomputed slice of keys. You get **two answers**, because there are
+two different questions, and mixing them into one number would get both
+wrong:
+
+- **Steady state:** what does one insertion or deletion cost in a structure
+  that has been in use for a while? Both structures are filled to 100,000
+  elements, then a *cycle* is replayed on them: bursts of insertions and
+  deletions of 100,000 further, transient elements, about 12,500 of them present
+  at a time, ending exactly where it started, so it can repeat endlessly.
+- **Build:** what does it cost to build such a structure from empty, with the
+  same kind of back-and-forth along the way? Every sample is one complete
+  build of a fresh structure.
+
+The reason for the split: the first pass of a cycle is where a structure grows
+to the largest size the cycle reaches. For a Go map that pass cost up to seven
+times as much per operation as every pass after it. Timing it along with the
+steady state would spread a one-time cost over the measurement, in a
+proportion that depends on how long the run was. Dropping it would favour
+structures whose growth is expensive. So it is measured where it belongs, in
+the build, where creating the structure with or without a capacity hint, every
+resize and the garbage all count, and the steady state starts after one
+untimed cycle. If the two answers disagree, that is the result: one structure
+can be faster to use and slower to build.
+
+What `workload.Compare` takes care of, so that you don't have to:
+
+- Every operation is valid by construction: nothing is inserted twice and
+  nothing is deleted that isn't there.
+- The streams are precomputed; the timed loop only reads the next operation.
+- Both structures are built in alternating chunks, so neither is the one built
+  last.
+- The first pass of the cycle is untimed, and the position in the cycle stays
+  with each structure across batches.
+- Whole builds take milliseconds, so the build comparison uses its own, smaller
+  defaults (31 repeats, 10 validation runs, about 1,300 builds in all) and
+  collects garbage between batches, so that one build's garbage is not
+  collected in the middle of the next.
+
+`workload.Config` tunes the streams: `Ratio` (insertions per element at rest,
+default 2), burst length, and `Victims`, which chooses what a deletion removes:
+`Uniform` (the default, like a general-purpose map), `FIFO` (a queue or a
+retention window), or `LIFO` (a stack or undo log).
+
+For setups `Compare` does not cover, the parts are available on their own:
+`workload.Cycle` and `workload.Build` make the streams, `workload.Replay`
+replays a cycle on one structure (including the untimed first pass and
+`Settle`, which returns the structure to its start state), and
+`workload.Check` replays any stream against a model and reports the first
+invalid operation.
+
 ## The long version: what `Compare` does, step by step
 
 This is the sequence `Compare` runs automatically. Read it if you want to
