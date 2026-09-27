@@ -121,3 +121,30 @@ func (thisState *DPRNG) Uint32N(n uint32) uint32 {
 func (thisState *DPRNG) UInt32N(n uint32) uint32 {
 	return thisState.Uint32N(n)
 }
+
+// Shuffle puts n elements in a pseudo-random order by calling swap(i, j) for
+// the pairs a Fisher-Yates shuffle exchanges, like math/rand's Shuffle.
+//
+// Parameters: n is the number of elements, at most 2^32; swap exchanges the
+// elements at two indices. Zero or one element leaves nothing to do, and a
+// negative n does nothing either.
+//
+// Its intended use is the build order of benchmark fixtures. Whatever is
+// allocated last lands in different memory, and is the last data the caches
+// saw, so a fixed order hands one candidate the same advantage in every
+// process. Shuffling the order per process, with a seed per process, turns that
+// into scatter that pooling across processes can average out; see [Combine].
+//
+//	rng := rtcompare.NewDPRNG(seed)
+//	builders := []func(){buildA, buildB}
+//	rng.Shuffle(len(builders), func(i, j int) { builders[i], builders[j] = builders[j], builders[i] })
+//	for _, build := range builders { build() }
+//
+// The bias of Uint32N for n that are not powers of two carries over, and it is
+// far below anything a benchmark could notice.
+func (thisState *DPRNG) Shuffle(n int, swap func(i, j int)) {
+	for i := n - 1; i > 0; i-- {
+		j := int(thisState.Uint32N(uint32(i + 1)))
+		swap(i, j)
+	}
+}

@@ -23,6 +23,7 @@ Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, 
 - Measure the harness against itself, so that a result can be compared with the difference the same setup reports between two runs of identical code.
 - Detect a trend across a measurement run, which resampling structurally cannot see because it discards the order the samples arrived in.
 - Resample in blocks when the measurements are correlated enough that treating them as independent would overstate confidence.
+- Run a comparison in several processes, each with its own heap layout, and pool the results into an interval that covers the scatter between processes (`multiproc`, `Combine`, `PerturbHeap`).
 - Deterministic PRNG for reproducible inputs, and a crypto/rand-backed one where unpredictability is wanted.
 
 ## What this cannot tell you
@@ -30,6 +31,8 @@ Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, 
 Two limits are worth knowing before the first run, because neither is visible in a confidence figure.
 
 **Attenuation.** What is measured is the loop, not the function. Whatever fixed per-operation cost the batch body carries — the loop itself, an accumulator, regenerating an input the candidate mutates — is present in both candidates and shrinks the difference between them. In a controlled experiment where the true difference was exactly 50%, the measured difference was 35%, because 1.81 ns/op of loop overhead sat on top of 2.13 ns/op of real work. Subtracting an empty-loop baseline does not repair it: the compiler optimizes an empty loop differently, and that correction recovered 2 of the 15 missing percentage points. Read a result as the speedup of the measured region, not of the isolated function.
+
+**The process.** Every interval a single run reports covers the noise within that one process. A process fixes its memory layout for its whole life, and for data larger than the caches or full of pointers that layout alone has moved a difference by several points — 4 to 10 times the reported interval, and sometimes past zero. Where that applies, one process is one observation: run several with the `multiproc` package and read the pooled result. See [One process is one observation](HOWTO.md#one-process-is-one-observation).
 
 **The noise floor.** Resampling quantifies how much an estimate would move if the same measurements were drawn again. It cannot see a bias that affected all of them equally, and will report a tight confidence around one. Measured on identical code, this package has seen apparent differences from a few tenths of a percent to well over one, carried with high confidence. `ValidateHarness` exists to measure that floor for your machine and your options; a result below it has resolved nothing, however confident the number looks.
 
@@ -156,10 +159,17 @@ Checking the measurement itself:
 - `ValidateHarness(candidate, ValidationOptions)` — runs a candidate against itself and reports the noise floor, the tie rate, the drift rate and the autocorrelation. `Resolves(difference)` answers whether a result clears that floor. The floor is the 90th percentile of the differences observed on identical code, not their maximum, so that it converges as you validate longer instead of growing; roughly one A/A run in ten exceeds it. Validate both candidates and use the worse floor.
 - `ValidatePair(a, b, ValidationOptions)` — validates two candidates together, interleaved batch by batch, and returns one `HarnessValidation` each. Use it instead of two `ValidateHarness` calls before comparing the two: a candidate validated on its own last would start the comparison with a warm cache.
 - `DetectDrift(samples)` — tests a sample series for a trend across the run.
+- `Report.Suspended` — how long the machine slept during a `Compare`, from the gap between the wall clock and the monotonic clock.
+
+Across processes:
+
+- `multiproc.Run(Options, suite)` — re-executes the program as child processes, one at a time, each with its own seed, and pools what each records per named comparison. It stops once every pooled interval is within ±2 points or ±10% of the difference, after at least 5 and at most 20 processes.
+- `Combine(reports, level)` — pools per-process reports of one comparison into a `Pooled` result: a t interval over the per-process deltas, plus how far the processes scatter beyond their own intervals (`Inflation`, Cochran's Q, I²).
+- `PerturbHeap(seed)` — allocates seeded filler in every small size class and one large block, so that data built afterwards lands at different addresses in each process.
 
 Primitives:
 
-- `DPRNG` / `CPRNG` — deterministic and cryptographic generators with `Uint64`, `Float64` and `Uint32N`.
+- `DPRNG` / `CPRNG` — deterministic and cryptographic generators with `Uint64`, `Float64` and `Uint32N`. `DPRNG.Shuffle` permutes, e.g. the order in which fixtures are built.
 - `SampleTime()` / `DiffTimeStamps()` — high-resolution timestamps, and `GetSampleTimePrecision()` for the smallest interval they can resolve here.
 - `Median` / `QuickMedian` / `Statistics` — small statistics helpers.
 

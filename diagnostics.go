@@ -276,7 +276,10 @@ func (e Estimate) String() string {
 // uncertainty only. It says nothing about a bias that affected every
 // measurement, and a machine that drifted during the run will produce a tight
 // interval around the wrong number. Read it alongside [ValidateHarness] and
-// [DetectDrift].
+// [DetectDrift]. Nor does it cover the next process: measurements from one run
+// of a program share that run's memory layout, which for large or
+// pointer-heavy data can shift the difference far beyond this interval. Pool
+// several processes with [Combine] where that matters.
 //
 // Level zero selects [DefaultConfidenceLevel]. Resamples zero selects
 // [DefaultResamples]. An error is returned if either input holds fewer than
