@@ -1,7 +1,9 @@
 package rtcompare
 
 import (
+	"fmt"
 	"math"
+	"math/rand/v2"
 	"strings"
 	"testing"
 	"time"
@@ -62,10 +64,16 @@ func TestCombinePoolsProcessesAsObservations(t *testing.T) {
 	}
 	t.Log("\n" + p.String())
 
-	mean, _, sd := Statistics(deltas)
+	// Worked out by hand: the mean is 0.162, the squared deviations sum to
+	// 0.01528, so the sample standard deviation is sqrt(0.01528/4), and the
+	// half-width is t(0.975, 4) = 2.776445 times that over sqrt(5).
+	mean, sd := 0.162, math.Sqrt(0.01528/4)
 	half := 2.776445 * sd / math.Sqrt(5)
 	if math.Abs(p.Delta-mean) > 1e-12 || math.Abs(p.Low-(mean-half)) > 1e-5 || math.Abs(p.High-(mean+half)) > 1e-5 {
 		t.Errorf("pooled %+.4f [%+.4f, %+.4f], want %+.4f [%+.4f, %+.4f]", p.Delta, p.Low, p.High, mean, mean-half, mean+half)
+	}
+	if math.Abs(p.SpreadBetween-sd) > 1e-12 {
+		t.Errorf("spread between processes: got %v, want the sample standard deviation %v", p.SpreadBetween, sd)
 	}
 	wantWithin := 0.01 / 1.959964
 	if math.Abs(p.SpreadWithin-wantWithin) > 1e-6 {
@@ -197,6 +205,42 @@ func TestPooledPrecise(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := c.p.Precise(0.02, 0.10); got != c.want {
 				t.Errorf("Precise: got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestCombineIntervalCoversAtItsLevel checks that a pooled result is as
+// trustworthy as it says: across many repetitions, a 95% pooled interval has
+// to contain the true difference about 95% of the time. It belongs to Combine,
+// whose t interval is what multiproc reports and stops on. Processes are
+// simulated with normally scattered deltas and negligible intervals of their
+// own, from a fixed seed so that the test is deterministic, and the coverage
+// has to lie within about three standard errors of 95% for as few as three
+// processes, where a population standard deviation gave 93%.
+func TestCombineIntervalCoversAtItsLevel(t *testing.T) {
+	rng := rand.New(rand.NewPCG(118, 1))
+	const truth, spread, trials = 0.05, 0.02, 4000
+	for _, k := range []int{3, 5, 10} {
+		t.Run(fmt.Sprintf("covers 95%% with %d processes", k), func(t *testing.T) {
+			hits := 0
+			reports := make([]Report, k)
+			for range trials {
+				for i := range reports {
+					reports[i] = perProcess(truth+spread*rng.NormFloat64(), 0.001)
+				}
+				p, err := Combine(reports, 0.95)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if p.Low <= truth && truth <= p.High {
+					hits++
+				}
+			}
+			// The standard error of a proportion near 0.95 over 4000 trials is
+			// 0.34 points.
+			if coverage := float64(hits) / trials; coverage < 0.94 || coverage > 0.96 {
+				t.Errorf("coverage %.1f%%, want 95%% within one point", coverage*100)
 			}
 		})
 	}
