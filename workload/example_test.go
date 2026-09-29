@@ -7,6 +7,7 @@ import (
 
 	set3 "github.com/TomTonic/Set3"
 	"github.com/TomTonic/rtcompare"
+	"github.com/TomTonic/rtcompare/multiproc"
 	"github.com/TomTonic/rtcompare/workload"
 )
 
@@ -103,4 +104,52 @@ func TestCompareAnswersBothQuestions(t *testing.T) {
 	if res.Build.SamplesA != nil || strings.Contains(res.String(), "build from empty") {
 		t.Errorf("SkipBuild should leave the build comparison out:\n%s", res)
 	}
+}
+
+// Cycle and Replay replay insertions and deletions on one structure without
+// ever rebuilding it: the cycle ends where it started, and the Replay keeps
+// the structure's position in it. Check proves that a stream is valid.
+func ExampleCycle() {
+	const target = 1000
+	cfg := workload.Config{Seed: 1}
+	cycle, err := workload.Cycle(target, cfg)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	atRest := make([]uint32, target)
+	for i := range atRest {
+		atRest[i] = uint32(i)
+	}
+	fmt.Println("valid:", workload.Check(cycle, atRest, atRest) == nil)
+
+	m := make(map[uint64]struct{}, target)
+	for id := range uint32(target) {
+		m[cfg.Key(id)] = struct{}{}
+	}
+	replay := workload.NewReplay(cycle, func(run []workload.Op) {
+		for _, op := range run {
+			if op.Kind == workload.Insert {
+				m[op.Key] = struct{}{}
+			} else {
+				delete(m, op.Key)
+			}
+		}
+	})
+	candidate := replay.Candidate("map")
+	candidate.Setup() // what rtcompare does before the first batch: one untimed pass
+	candidate.Batch(uint64(len(cycle)) + 17)
+	replay.Settle()
+	fmt.Println("back at rest:", len(m) == target)
+	// Output:
+	// valid: true
+	// back at rest: true
+}
+
+// Suite runs Compare in several processes through the multiproc package and
+// pools both answers, for structures too large for one process to judge.
+func ExampleSuite() {
+	const target = 1_000_000
+	multiproc.MainSuite(multiproc.Options{},
+		workload.Suite("map vs Set3", target, goMap(target), set3Set(target), workload.Options{}))
 }
