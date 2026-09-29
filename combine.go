@@ -37,7 +37,8 @@ type Pooled struct {
 	// Level is the coverage level of the interval.
 	Level float64
 
-	// SpreadBetween is the standard deviation of the per-process deltas.
+	// SpreadBetween is the sample standard deviation of the per-process
+	// deltas.
 	SpreadBetween float64
 
 	// SpreadWithin is the median standard error that a single process's own
@@ -167,7 +168,7 @@ func Combine(reports []Report, level float64) (Pooled, error) {
 		ses[i] = standardErrorOf(e)
 	}
 
-	mean, _, sd := Statistics(deltas)
+	mean, sd := meanAndSampleSD(deltas)
 	half := studentTQuantile((1+level)/2, float64(k-1)) * sd / math.Sqrt(float64(k))
 	p := Pooled{
 		Processes:     k,
@@ -189,6 +190,23 @@ func Combine(reports []Report, level float64) (Pooled, error) {
 }
 
 func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
+
+// meanAndSampleSD returns the mean and the sample standard deviation, with
+// n-1 in the denominator, which is what a Student t interval is built on. The
+// population standard deviation that Statistics returns is smaller by
+// sqrt((n-1)/n) and made the pooled interval cover only 93% at a nominal 95%
+// with three to five processes (issue #118).
+func meanAndSampleSD(xs []float64) (mean, sd float64) {
+	for _, x := range xs {
+		mean += x
+	}
+	mean /= float64(len(xs))
+	var ss float64
+	for _, x := range xs {
+		ss += (x - mean) * (x - mean)
+	}
+	return mean, math.Sqrt(ss / float64(len(xs)-1))
+}
 
 // standardErrorOf recovers the standard error a single process's interval
 // implies, treating it as a normal interval at its own level. A report that
