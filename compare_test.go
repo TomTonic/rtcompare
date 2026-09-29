@@ -636,3 +636,46 @@ func TestCompareRecordsTheLiveHeap(t *testing.T) {
 		t.Errorf("live heap %d bytes, want between 1 and %d", got, ms.Sys)
 	}
 }
+
+// TestCompareIsReproducibleFromItsSeed checks that a report can be checked by
+// anyone who has it: its interval and confidences are drawn from a recorded
+// seed, so recomputing them from the report's own samples gives exactly the
+// same figures. Compare draws a seed when given none and keeps a given one, and
+// validates at the comparison's own level.
+func TestCompareIsReproducibleFromItsSeed(t *testing.T) {
+	opt := fastCompare()
+	// Identical candidates and a threshold of zero, so that the confidence
+	// lies between 0 and 1 and depends on which replicates were drawn.
+	opt.Thresholds = []float64{0}
+	opt.Level = 0.9
+	r, err := Compare(scaledCandidate("x1", 1), scaledCandidate("y1", 1), opt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Seed == 0 {
+		t.Fatal("Compare did not record the seed it drew")
+	}
+	e, err := EstimateDifference(r.SamplesA, r.SamplesB, EstimateOptions{
+		Level: r.Estimate.Level, Resamples: r.Estimate.Resamples, BlockLength: r.BlockLength, Seed: r.Seed})
+	if err != nil || e != r.Estimate {
+		t.Errorf("recomputed estimate %+v (%v), want %+v", e, err, r.Estimate)
+	}
+	c := BlockBootstrapConfidence(r.SamplesA, r.SamplesB, opt.Thresholds, r.Estimate.Resamples, r.BlockLength, r.Seed)
+	for _, th := range opt.Thresholds {
+		if c[th] != r.Confidence[th] {
+			t.Errorf("recomputed confidence at %v: %v, want %v", th, c[th], r.Confidence[th])
+		}
+	}
+	if c[0] == 0 || c[0] == 1 {
+		t.Logf("confidence %v does not depend on the replicates; the check above is weak this time", c[0])
+	}
+	if r.ValidationA.Level != 0.9 || r.ValidationB.Level != 0.9 {
+		t.Errorf("validated at levels %v and %v, want the comparison's 0.9", r.ValidationA.Level, r.ValidationB.Level)
+	}
+
+	opt.Seed = 42
+	opt.SkipValidation = true
+	if r, err = Compare(scaledCandidate("x1", 1), scaledCandidate("x2", 2), opt); err != nil || r.Seed != 42 {
+		t.Errorf("seed %d (%v), want the given 42", r.Seed, err)
+	}
+}

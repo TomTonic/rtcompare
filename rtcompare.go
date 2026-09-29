@@ -405,19 +405,7 @@ func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 	// that accumulation does not depend on float64 map-key behaviour.
 	counts := make([]uint64, len(thresholds))
 
-	// Both paths draw every replicate from a single generator created here.
-	// Building one per sample would refill an 8 KiB crypto/rand buffer for a few
-	// hundred bytes of use on the unseeded path, and would leave a measurable
-	// serial correlation between replicates on the seeded one; see
-	// bootstrapSampleDPRNG.
-	var next func(uint32) uint32
-	if prngSeed == 0 {
-		cryptoRNG := NewCPRNG(bootstrapCPRNGBufferBytes)
-		next = cryptoRNG.Uint32N
-	} else {
-		seededRNG := NewDPRNG(prngSeed)
-		next = seededRNG.Uint32N
-	}
+	next := bootstrapStream(prngSeed)
 
 	for range resamples {
 		sampleA := blockSample(A, blockLength, next)
@@ -587,6 +575,22 @@ func AutoBlockLength(n int) int {
 // is that of [BootstrapConfidence].
 func BlockBootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, blockLength int, prngSeed uint64) map[float64]float64 {
 	return bootstrapConfidence(A, B, relativeGains, resamples, blockLength, prngSeed)
+}
+
+// bootstrapStream returns the generator every replicate of one bootstrap is
+// drawn from: a DPRNG seeded with seed, or cryptographic randomness for seed
+// zero. One generator per bootstrap, not one per sample: building one per
+// sample would refill an 8 KiB crypto/rand buffer for a few hundred bytes of
+// use on the unseeded path, and would leave a measurable serial correlation
+// between replicates on the seeded one; see bootstrapSampleDPRNG. Sharing it
+// is also what makes EstimateDifference and BlockBootstrapConfidence draw the
+// same replicates for the same seed.
+func bootstrapStream(seed uint64) func(uint32) uint32 {
+	if seed == 0 {
+		return NewCPRNG(bootstrapCPRNGBufferBytes).Uint32N
+	}
+	rng := NewDPRNG(seed)
+	return rng.Uint32N
 }
 
 // blockSample draws one bootstrap replicate from xs using contiguous blocks of

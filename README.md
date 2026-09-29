@@ -108,7 +108,7 @@ which prints something like
 
 ```
 A 712.7 per op, B 1262 per op
-difference +43.52% [+42.31%, +44.48%] at 95% confidence
+difference +43.52% [+42.31%, +44.48%] at 95% confidence; B/A 1.771× [1.733×, 1.801×]
 noise floor 1.765%, autocorrelation +0.344, resampled in blocks of 5
 resolved: A is faster than B
   warning: candidate B drifted during the run, shifting -7.12% from its first

@@ -196,6 +196,30 @@ func midranks(xs []float64) []float64 {
 // asked for zero.
 const DefaultConfidenceLevel = 0.95
 
+// EstimateOptions configures [EstimateDifference]. The zero value is usable
+// and selects the documented defaults.
+type EstimateOptions struct {
+	// Level is the interval's coverage level, strictly between zero and one.
+	// Zero selects [DefaultConfidenceLevel].
+	Level float64
+
+	// Resamples is the number of bootstrap replicates. Zero selects
+	// [DefaultResamples].
+	Resamples uint64
+
+	// BlockLength resamples contiguous blocks of this many measurements, for
+	// measurements correlated with their neighbours; see
+	// [BlockBootstrapConfidence]. Zero and one select the ordinary bootstrap.
+	BlockLength int
+
+	// Seed makes the resampling reproducible: the same seed and inputs give
+	// the same Estimate. Zero selects cryptographic randomness instead.
+	// Replicates are drawn exactly as [BlockBootstrapConfidence] draws them
+	// for the same seed and block length, so the two agree replicate for
+	// replicate.
+	Seed uint64
+}
+
 // Estimate is a point estimate of the relative difference between two sets of
 // measurements, together with an interval around it.
 //
@@ -205,6 +229,11 @@ const DefaultConfidenceLevel = 0.95
 // This one reports how large the difference appears to be and how precisely
 // that is known, which is what you want when no threshold is given and the
 // honest answer might be "somewhere between 2% and 19%".
+//
+// Delta is 1 - A/B, how much less time A needs relative to B, and that measure
+// is not symmetric: when B takes twice as long as A, Delta is +50%, but with
+// the roles swapped it is -100%. Read it as a share of B's time, or use
+// [Estimate.Ratio] for the factor between the two, which String prints too.
 type Estimate struct {
 	// Delta is the relative difference computed on the measurements themselves,
 	// 1 - median(A)/median(B). Positive means A is smaller, which for runtimes
@@ -235,10 +264,24 @@ func (e Estimate) Excludes(value float64) bool {
 	return (e.Low > value && e.High > value) || (e.Low < value && e.High < value)
 }
 
-// String renders the estimate as one line, in percent.
+// Ratio returns how many times as long B takes as A, median(B)/median(A),
+// with the interval's bounds carried over: 1/(1-Delta), 1/(1-Low) and
+// 1/(1-High). A ratio of 2 means B takes twice as long as A, and 0.5 that it
+// takes half as long.
+//
+// Use it to report a difference in the form that reads the same whichever
+// candidate is called A: swapping the roles turns 2 into 0.5, where Delta
+// turns +50% into -100%.
+func (e Estimate) Ratio() (ratio, low, high float64) {
+	return 1 / (1 - e.Delta), 1 / (1 - e.Low), 1 / (1 - e.High)
+}
+
+// String renders the estimate as one line: Delta in percent with its
+// interval, then the ratio B/A with its interval.
 func (e Estimate) String() string {
-	return fmt.Sprintf("%+.2f%% [%+.2f%%, %+.2f%%] at %.0f%% confidence",
-		e.Delta*100, e.Low*100, e.High*100, e.Level*100)
+	r, lo, hi := e.Ratio()
+	return fmt.Sprintf("%+.2f%% [%+.2f%%, %+.2f%%] at %.0f%% confidence; B/A %.3f× [%.3f×, %.3f×]",
+		e.Delta*100, e.Low*100, e.High*100, e.Level*100, r, lo, hi)
 }
 
 // EstimateDifference reports how much smaller the measurements in A are than
@@ -281,22 +324,19 @@ func (e Estimate) String() string {
 // pointer-heavy data can shift the difference far beyond this interval. Pool
 // several processes with [Combine] where that matters.
 //
-// Level zero selects [DefaultConfidenceLevel]. Resamples zero selects
-// [DefaultResamples]. An error is returned if either input holds fewer than
-// [MinimumDataPoints] values or if level is not strictly between zero and one.
-func EstimateDifference(A, B []float64, level float64, resamples uint64) (Estimate, error) {
-	// Block length one is single-observation resampling, which is what this
-	// function has always done; [Compare] uses the shared core with longer
-	// blocks when it measures dependence between neighbouring samples.
-	return estimateDifference(A, B, level, resamples, 1)
-}
-
-// estimateDifference is the shared implementation of EstimateDifference and the
-// interval [Compare] builds. A blockLength of one gives the ordinary bootstrap.
-func estimateDifference(A, B []float64, level float64, resamples uint64, blockLength int) (Estimate, error) {
+// See [EstimateOptions] for the parameters. An error is returned if either
+// input holds fewer than [MinimumDataPoints] values or if the level is not
+// strictly between zero and one.
+//
+// A [Report] from [Compare] can be recomputed exactly from its own samples:
+//
+//	e, err := rtcompare.EstimateDifference(r.SamplesA, r.SamplesB, rtcompare.EstimateOptions{
+//		Level: r.Estimate.Level, Resamples: r.Estimate.Resamples, BlockLength: r.BlockLength, Seed: r.Seed})
+func EstimateDifference(A, B []float64, opt EstimateOptions) (Estimate, error) {
 	if uint64(len(A)) < MinimumDataPoints || uint64(len(B)) < MinimumDataPoints {
 		return Estimate{}, fmt.Errorf("not enough data points: need at least %d measurements for each input", MinimumDataPoints)
 	}
+	level, resamples := opt.Level, opt.Resamples
 	if level == 0 {
 		level = DefaultConfidenceLevel
 	}
@@ -306,6 +346,7 @@ func estimateDifference(A, B []float64, level float64, resamples uint64, blockLe
 	if resamples == 0 {
 		resamples = DefaultResamples
 	}
+	blockLength := max(1, opt.BlockLength)
 
 	// QuickMedian rearranges what it is given, so the point estimate works on
 	// copies and leaves the caller's measurements alone.
@@ -313,10 +354,10 @@ func estimateDifference(A, B []float64, level float64, resamples uint64, blockLe
 	pointB := QuickMedian(slices.Clone(B))
 
 	deltas := make([]float64, 0, resamples)
-	rng := NewCPRNG(bootstrapCPRNGBufferBytes)
+	next := bootstrapStream(opt.Seed)
 	for range resamples {
-		medA := QuickMedian(blockSample(A, blockLength, rng.Uint32N))
-		medB := QuickMedian(blockSample(B, blockLength, rng.Uint32N))
+		medA := QuickMedian(blockSample(A, blockLength, next))
+		medB := QuickMedian(blockSample(B, blockLength, next))
 		if d := relativeDelta(medA, medB); !math.IsNaN(d) {
 			deltas = append(deltas, d)
 		}

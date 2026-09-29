@@ -286,6 +286,11 @@ type ValidationOptions struct {
 	// Level is the confidence level that FalseSignalRate is judged against.
 	// Zero selects [DefaultValidationLevel]. Must be in (0.5, 1).
 	Level float64
+
+	// Seed makes the bootstraps of the A/A runs reproducible; each run of each
+	// candidate draws from its own seed derived from this one. Zero selects
+	// cryptographic randomness. [Compare] derives it from its own seed.
+	Seed uint64
 }
 
 // ValidateHarness measures how much difference a setup reports between two
@@ -354,7 +359,7 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 		s.innerLoops = cal.InnerLoops
 	}
 
-	runs := newAARuns(opt)
+	runs := newAARuns(opt, 0)
 	for run := range opt.Runs {
 		samples := measureInTurn([]Candidate{c, c}, s.forRun(run))
 		runs.add(samples[0], samples[1])
@@ -418,7 +423,7 @@ func ValidatePair(a, b Candidate, opt ValidationOptions) (va, vb HarnessValidati
 		cands[slot] = both[who]
 		halves[who] = append(halves[who], slot)
 	}
-	runs := [2]*aaRuns{newAARuns(opt), newAARuns(opt)}
+	runs := [2]*aaRuns{newAARuns(opt, 0), newAARuns(opt, 1)}
 	for run := range opt.Runs {
 		samples := measureInTurn(cands, s.forRun(run))
 		for who, h := range halves {
@@ -496,6 +501,7 @@ func (s schedule) forRun(run int) schedule {
 // validation compute their reports in exactly the same way.
 type aaRuns struct {
 	opt              ValidationOptions
+	stream           uint64 // which candidate, so that each draws its own seeds
 	deltas           []float64
 	confidences      []float64
 	tieRates         []float64
@@ -504,9 +510,10 @@ type aaRuns struct {
 	driftedRuns      int
 }
 
-func newAARuns(opt ValidationOptions) *aaRuns {
+func newAARuns(opt ValidationOptions, stream uint64) *aaRuns {
 	return &aaRuns{
 		opt:              opt,
+		stream:           stream,
 		deltas:           make([]float64, 0, opt.Runs),
 		confidences:      make([]float64, 0, opt.Runs),
 		tieRates:         make([]float64, 0, opt.Runs),
@@ -530,8 +537,9 @@ func (r *aaRuns) add(sampleA, sampleB []float64) {
 	// and the three probabilities summing to one, (confAB + 1 - confBA)/2
 	// collapses to P(medA < medB) + P(tie)/2, and confAB + confBA - 1
 	// recovers the tie rate. Both follow from the public API alone.
-	confAB := BootstrapConfidence(sampleA, sampleB, []float64{0.0}, r.opt.Resamples, 0)[0.0]
-	confBA := BootstrapConfidence(sampleB, sampleA, []float64{0.0}, r.opt.Resamples, 0)[0.0]
+	seedAB, seedBA := r.seeds()
+	confAB := BootstrapConfidence(sampleA, sampleB, []float64{0.0}, r.opt.Resamples, seedAB)[0.0]
+	confBA := BootstrapConfidence(sampleB, sampleA, []float64{0.0}, r.opt.Resamples, seedBA)[0.0]
 	r.confidences = append(r.confidences, (confAB+1-confBA)/2)
 	r.tieRates = append(r.tieRates, math.Max(0, confAB+confBA-1))
 
@@ -555,6 +563,18 @@ func (r *aaRuns) add(sampleA, sampleB []float64) {
 	if drifted {
 		r.driftedRuns++
 	}
+}
+
+// seeds returns the bootstrap seeds of the next run, one per direction, all
+// distinct across runs and candidates; zero, for cryptographic randomness,
+// when the options carry no seed.
+func (r *aaRuns) seeds() (ab, ba uint64) {
+	if r.opt.Seed == 0 {
+		return 0, 0
+	}
+	base := mixSeed(r.opt.Seed ^ (r.stream+1)*0x9E3779B97F4A7C15)
+	run := uint64(len(r.deltas))
+	return mixSeed(base + 2*run), mixSeed(base + 2*run + 1)
 }
 
 // result summarises the recorded runs.
