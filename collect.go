@@ -1,6 +1,7 @@
 package rtcompare
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -360,6 +361,11 @@ type CollectOptions struct {
 // automatic calibration of InnerLoops fails. It does not otherwise inspect the
 // collected samples.
 func Collect(a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, err error) {
+	return collect(context.Background(), a, b, opt)
+}
+
+// collect is Collect, stopping between batches once ctx is done.
+func collect(ctx context.Context, a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, err error) {
 	if a.Batch == nil {
 		return nil, nil, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", a.label("A"))
 	}
@@ -370,6 +376,7 @@ func Collect(a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, 
 	if err != nil {
 		return nil, nil, err
 	}
+	s.ctx = ctx
 
 	if opt.DisableGC {
 		previous := debug.SetGCPercent(-1)
@@ -379,7 +386,7 @@ func Collect(a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, 
 	if s.innerLoops == 0 {
 		// DisableGC is already in effect for the whole call, so it is not
 		// repeated here; the rest of the conditions must match the real run.
-		s.innerLoops, err = calibratePair(a, b, CalibrationOptions{
+		s.innerLoops, err = calibratePair(ctx, a, b, CalibrationOptions{
 			MaxQuantizationError: opt.MaxQuantizationError,
 			MaxInnerLoops:        opt.MaxInnerLoops,
 			GCBetween:            opt.GCBetween,
@@ -389,7 +396,10 @@ func Collect(a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, 
 		}
 	}
 
-	samples := measureInTurn([]Candidate{a, b}, s)
+	samples, err := measureInTurn([]Candidate{a, b}, s)
+	if err != nil {
+		return nil, nil, err
+	}
 	return samples[0], samples[1], nil
 }
 
@@ -398,6 +408,7 @@ func Collect(a, b Candidate, opt CollectOptions) (samplesA, samplesB []float64, 
 // because [Collect] and the A/A validations measure different sets of
 // candidates under the same options and must not interpret them differently.
 type schedule struct {
+	ctx            context.Context // checked between batches; nil means never done
 	repeats        int
 	innerLoops     uint64 // zero until calibrated
 	order          Order
@@ -459,12 +470,12 @@ func (opt CollectOptions) schedule() (schedule, error) {
 // the two sizes. The cheaper candidate needs the larger batch, so the maximum
 // leaves both at or above the target duration while keeping the operation count
 // identical for both.
-func calibratePair(a, b Candidate, opt CalibrationOptions) (uint64, error) {
-	calA, err := CalibrateInnerLoops(a, opt)
+func calibratePair(ctx context.Context, a, b Candidate, opt CalibrationOptions) (uint64, error) {
+	calA, err := calibrate(ctx, a, opt)
 	if err != nil {
 		return 0, fmt.Errorf("calibrating candidate %s: %w", a.label("A"), err)
 	}
-	calB, err := CalibrateInnerLoops(b, opt)
+	calB, err := calibrate(ctx, b, opt)
 	if err != nil {
 		return 0, fmt.Errorf("calibrating candidate %s: %w", b.label("B"), err)
 	}
@@ -481,13 +492,15 @@ func calibratePair(a, b Candidate, opt CalibrationOptions) (uint64, error) {
 // candidates that is exactly ABBA, Random or Sequential. For more it keeps the
 // property that matters: under ABBA every candidate holds every position equally
 // often, and none of them runs alone for longer than two batches.
-func measureInTurn(cands []Candidate, s schedule) [][]float64 {
+func measureInTurn(cands []Candidate, s schedule) ([][]float64, error) {
 	if s.disableGC {
 		previous := debug.SetGCPercent(-1)
 		defer debug.SetGCPercent(previous)
 	}
 
-	warmUp(cands, s)
+	if err := warmUp(cands, s); err != nil {
+		return nil, err
+	}
 
 	var rng prng.DPRNG
 	if s.order == OrderRandom {
@@ -503,6 +516,9 @@ func measureInTurn(cands []Candidate, s schedule) [][]float64 {
 		samples[i] = make([]float64, 0, s.repeats)
 	}
 	for round := range s.repeats {
+		if err := s.done(); err != nil {
+			return nil, err
+		}
 		forward := true
 		switch s.order {
 		case OrderABBA:
@@ -519,20 +535,37 @@ func measureInTurn(cands []Candidate, s schedule) [][]float64 {
 			samples[j] = append(samples[j], runBatch(cands[j], s.innerLoops, s.gc))
 		}
 	}
-	return samples
+	return samples, nil
+}
+
+// done returns the schedule's context error, wrapped, once the context is
+// done, and nil otherwise. It is checked between rounds, never inside a
+// measured batch.
+func (s schedule) done() error {
+	if s.ctx == nil {
+		return nil
+	}
+	if err := s.ctx.Err(); err != nil {
+		return fmt.Errorf("rtcompare: stopped: %w", err)
+	}
+	return nil
 }
 
 // warmUp runs unmeasured rounds until both the round count and the duration of
 // the schedule have been reached. It reverses the order every round, like
 // OrderABBA, because a warm-up that always ends on the same candidate hands that
 // candidate the caches.
-func warmUp(cands []Candidate, s schedule) {
+func warmUp(cands []Candidate, s schedule) error {
 	start := time.Now()
 	for round := 0; round < s.warmupRounds || time.Since(start) < s.warmupDuration; round++ {
+		if err := s.done(); err != nil {
+			return err
+		}
 		for k := range cands {
 			runBatch(cands[turn(k, len(cands), round%2 == 0)], s.innerLoops, s.gc)
 		}
 	}
+	return nil
 }
 
 // turn returns the index of the k-th candidate to run in a round of n, going
@@ -701,6 +734,12 @@ type CalibrationOptions struct {
 // practice for keeping a candidate honest, but it is not what this error is
 // usually pointing at.
 func CalibrateInnerLoops(c Candidate, opt CalibrationOptions) (Calibration, error) {
+	return calibrate(context.Background(), c, opt)
+}
+
+// calibrate is CalibrateInnerLoops, stopping between trial batches once ctx
+// is done.
+func calibrate(ctx context.Context, c Candidate, opt CalibrationOptions) (Calibration, error) {
 	if c.Batch == nil {
 		return Calibration{}, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", c.label("under calibration"))
 	}
@@ -737,6 +776,9 @@ func CalibrateInnerLoops(c Candidate, opt CalibrationOptions) (Calibration, erro
 
 	n := uint64(1)
 	for step := 0; step < maxSteps; step++ {
+		if err := ctx.Err(); err != nil {
+			return Calibration{}, fmt.Errorf("rtcompare: stopped: %w", err)
+		}
 		// Judge a size by its shortest run: the fastest observed batch is the
 		// one least contaminated by interference, so a size that clears the
 		// target even at its fastest is genuinely long enough.

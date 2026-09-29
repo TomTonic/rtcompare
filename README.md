@@ -149,6 +149,7 @@ The standard `testing` package is excellent for microbenchmarks and tight per-op
 The one call:
 
 - `Compare(a, b, CompareOptions)` — runs the whole protocol and returns a `Report`. `Report.Resolved` is the short answer, `Report.Warnings` is the fine print, and the rest of the struct is the evidence: the samples, the estimate, the per-candidate validations, the drift tests and the resampling choice.
+- `CompareContext(ctx, a, b, CompareOptions)` — the same, stopping between batches once `ctx` is done. `CompareOptions.Progress` reports the stages and each validation run, and `CompareOptions.MaxDuration` stops the validation, the dominant cost, from starting more runs once half the budget is gone.
 
 The individual steps, for when the summary is not enough:
 

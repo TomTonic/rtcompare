@@ -1,9 +1,11 @@
 package rtcompare
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"slices"
+	"time"
 )
 
 // DefaultValidationRuns is the number of A/A experiments [ValidateHarness]
@@ -352,7 +354,7 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 	if s.innerLoops == 0 {
 		// Calibrate once. Recalibrating per run would let the batch size drift
 		// between runs and make their noise levels incomparable.
-		cal, err := CalibrateInnerLoops(c, opt.calibration())
+		cal, err := calibrate(context.Background(), c, opt.calibration())
 		if err != nil {
 			return HarnessValidation{}, fmt.Errorf("calibrating candidate %s: %w", c.label("under validation"), err)
 		}
@@ -361,7 +363,10 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 
 	runs := newAARuns(opt, 0)
 	for run := range opt.Runs {
-		samples := measureInTurn([]Candidate{c, c}, s.forRun(run))
+		samples, err := measureInTurn([]Candidate{c, c}, s.forRun(run))
+		if err != nil {
+			return HarnessValidation{}, err
+		}
 		runs.add(samples[0], samples[1])
 	}
 	return runs.result(s.innerLoops), nil
@@ -400,6 +405,25 @@ func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, err
 //	floor := max(va.NoiseFloor, vb.NoiseFloor)
 //	sa, sb, err := rtcompare.Collect(a, b, opts)
 func ValidatePair(a, b Candidate, opt ValidationOptions) (va, vb HarnessValidation, err error) {
+	return validatePair(context.Background(), a, b, opt, validationBudget{})
+}
+
+// validationBudget is what Compare hands its validation beyond the options:
+// when to stop starting runs, and whom to tell after each one.
+type validationBudget struct {
+	// deadline, when not zero, stops the validation from starting another
+	// run once it has passed and at least minRuns have run.
+	deadline time.Time
+	minRuns  int
+
+	// progress, when not nil, is called with the runs done and requested,
+	// before the first run and after each one.
+	progress func(done, total int)
+}
+
+// validatePair is ValidatePair, stopping between batches once ctx is done,
+// and within the budget.
+func validatePair(ctx context.Context, a, b Candidate, opt ValidationOptions, budget validationBudget) (va, vb HarnessValidation, err error) {
 	if a.Batch == nil {
 		return va, vb, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", a.label("A"))
 	}
@@ -410,8 +434,9 @@ func ValidatePair(a, b Candidate, opt ValidationOptions) (va, vb HarnessValidati
 	if err != nil {
 		return va, vb, err
 	}
+	s.ctx = ctx
 	if s.innerLoops == 0 {
-		if s.innerLoops, err = calibratePair(a, b, opt.calibration()); err != nil {
+		if s.innerLoops, err = calibratePair(ctx, a, b, opt.calibration()); err != nil {
 			return va, vb, err
 		}
 	}
@@ -425,10 +450,22 @@ func ValidatePair(a, b Candidate, opt ValidationOptions) (va, vb HarnessValidati
 	}
 	runs := [2]*aaRuns{newAARuns(opt, 0), newAARuns(opt, 1)}
 	for run := range opt.Runs {
-		samples := measureInTurn(cands, s.forRun(run))
+		if run >= budget.minRuns && !budget.deadline.IsZero() && time.Now().After(budget.deadline) {
+			break
+		}
+		if budget.progress != nil {
+			budget.progress(run, opt.Runs)
+		}
+		samples, err := measureInTurn(cands, s.forRun(run))
+		if err != nil {
+			return va, vb, err
+		}
 		for who, h := range halves {
 			runs[who].add(samples[h[0]], samples[h[1]])
 		}
+	}
+	if budget.progress != nil {
+		budget.progress(len(runs[0].deltas), opt.Runs)
 	}
 	return runs[0].result(s.innerLoops), runs[1].result(s.innerLoops), nil
 }
