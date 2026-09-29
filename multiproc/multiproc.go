@@ -15,7 +15,8 @@
 // candidates' data is built in an order that alternates between processes,
 // since whichever is built second can be consistently a few percent faster;
 // the reports are pooled per comparison with [rtcompare.Combine]; and
-// processes keep being started until every pooled interval is precise enough.
+// and the first processes decide how many more every pooled interval needs to
+// be precise enough.
 //
 // A program needs nothing but the comparisons:
 //
@@ -91,8 +92,8 @@ const (
 // Five processes were enough while the data fit in the caches. Out of cache
 // the first suite needed 13 to 15 before every interval was within two
 // points, which set the old serial budget of 20; later runs needed 20 to 40,
-// and where processes scattered by 9 to 12 points the stop rule would have
-// needed 70 to 130 (issue #115). DefaultMaxProcesses of 40 keeps a serial run
+// and where processes scattered by 9 to 12 points the precision asked for
+// would have needed 70 to 130 (issue #115). DefaultMaxProcesses of 40 keeps a serial run
 // bounded while covering a scatter of about 6 points. A parallel run is
 // budgeted in waves instead: DefaultMaxWaves of 10 costs about the wall time
 // of 10 serial processes, since a wave takes about as long as one process,
@@ -110,9 +111,13 @@ const (
 // Options configures [Run]. The zero value is usable and selects the
 // documented defaults.
 type Options struct {
-	// MinProcesses is the least number of processes to run before the stop
-	// rule is consulted. Zero selects [DefaultMinProcesses]. Must be at least 3,
-	// the minimum [rtcompare.Combine] pools.
+	// MinProcesses is the size of the run's first stage: the processes whose
+	// scatter decides how many processes the whole run needs, once, see
+	// AbsPrecision. Zero selects [DefaultMinProcesses]. Must be at least 3, the
+	// minimum [rtcompare.Combine] pools. It is rounded up to a whole Rotation,
+	// and in a parallel run to a whole wave. A larger first stage estimates the
+	// scatter better and so asks for fewer extra processes, at the price of
+	// never running fewer.
 	MinProcesses int
 
 	// MaxProcesses bounds the number of processes. Zero selects
@@ -126,7 +131,7 @@ type Options struct {
 	// Zero or 1 selects the serial regime, one process after another. Above 1,
 	// processes are started in waves of Parallel, rounded up to a whole
 	// Rotation so that every build order is represented equally in each wave,
-	// and the stop rule is consulted after each complete wave.
+	// and the first stage and the whole run are whole waves.
 	//
 	// Parallel runs measure a loaded machine: the children share caches,
 	// memory bandwidth and clock headroom, much as a program in production
@@ -147,17 +152,21 @@ type Options struct {
 
 	// Rotation is the number of build orders the suite cycles through by
 	// Process.Index, such as 2 for building A's data last in even processes and
-	// B's in odd ones. The stop rule is only consulted after a whole rotation,
-	// so that every order is represented equally in the pooled result. Zero
-	// selects [DefaultRotation], which matches that two-way alternation and
-	// costs a suite that does not alternate at most one extra process; 1
-	// consults the rule after every process.
+	// B's in odd ones. The first stage and the whole run are rounded up to a
+	// whole rotation, so that every order is represented equally in the pooled
+	// result. Zero selects [DefaultRotation], which matches that two-way
+	// alternation and costs a suite that does not alternate at most one extra
+	// process; 1 rounds nothing.
 	Rotation int
 
-	// AbsPrecision and RelPrecision are the stop rule: no more processes are
-	// started once every comparison's pooled interval has a half-width of at
-	// most AbsPrecision, or of at most RelPrecision times its |Delta|. Zero
-	// selects [DefaultAbsPrecision] and [DefaultRelPrecision].
+	// AbsPrecision and RelPrecision are the precision asked for: every
+	// comparison's pooled interval should have a half-width of at most
+	// AbsPrecision, or of at most RelPrecision times its |Delta|. After the
+	// first stage of MinProcesses, the run computes once how many processes
+	// that takes, from the scatter the first stage showed, and then runs that
+	// many, up to MaxProcesses, without looking at the intervals again; see
+	// [rtcompare.Pooled.ProcessesFor] for why. Zero selects
+	// [DefaultAbsPrecision] and [DefaultRelPrecision].
 	AbsPrecision, RelPrecision float64
 
 	// Level is the coverage level of the pooled intervals. Zero selects
@@ -234,9 +243,13 @@ type Comparison struct {
 	// child.
 	Reports []rtcompare.Report
 
-	// Pooled is the result of [rtcompare.Combine] over Reports. It is the zero
-	// value until three processes have recorded the comparison.
+	// Pooled is the result of pooling Reports: [rtcompare.CombineStaged] once
+	// the run's first stage is complete, [rtcompare.Combine] before. It is the
+	// zero value until three processes have recorded the comparison.
 	Pooled rtcompare.Pooled
+
+	// firstStage is how many reports the first stage held, zero until then.
+	firstStage int
 }
 
 // Results is what [Run] found.
@@ -253,8 +266,9 @@ type Results struct {
 	// recorded.
 	Comparisons []Comparison
 
-	// Precise reports whether the stop rule was met; false means the run
-	// stopped at MaxProcesses with at least one interval still wider than
+	// Precise reports whether the run reached the number of processes its
+	// first stage called for; false means that number exceeded MaxProcesses,
+	// so the run stopped there with at least one interval wider than
 	// requested.
 	Precise bool
 
@@ -306,12 +320,13 @@ func (r Results) String() string {
 // Options.Parallel processes at a time (see the package documentation for the
 // two regimes). Process i always gets index i and the same seed, whichever
 // child finishes first, and results are pooled in index order, so a run is
-// repeatable from its seed in either regime. Once MinProcesses have run it
-// stops as soon as every comparison's pooled interval meets the precision in
-// Options at the end of a whole Rotation, or of a whole wave in a parallel
-// run, and in any case after MaxProcesses. If a child of a wave fails, its
-// siblings are killed and the error of the lowest failing index is returned. It returns the pooled
-// results. In a child, Run perturbs the heap from the process's seed (see
+// repeatable from its seed in either regime. The first MinProcesses are the
+// first stage: from their scatter, Run decides once how many processes every
+// comparison's interval needs to meet the precision in Options, rounded up to
+// a whole Rotation or wave and at most MaxProcesses, and then runs exactly
+// that many; see Options.AbsPrecision. If a child of a wave fails, its
+// siblings are killed and the error of the lowest failing index is returned.
+// It returns the pooled results. In a child, Run perturbs the heap from the process's seed (see
 // [rtcompare.PerturbHeap]), calls suite once, hands its records to the parent
 // through a file, and returns Results with Child set; the caller should then
 // return without doing anything else, since the parent does the reporting.
@@ -347,8 +362,11 @@ func Run(opt Options, suite func(*Process) error) (Results, error) {
 	w := newWaveRunner(opt, dir)
 	res := Results{Parallel: opt.Parallel, ChildGOMAXPROCS: w.gomaxprocs}
 	index := map[string]int{}
-	for start := 0; start < opt.MaxProcesses; start += opt.Parallel {
-		recs, err := w.run(start, min(opt.Parallel, opt.MaxProcesses-start))
+	// The run's size is decided once, from its first stage, and not by looking
+	// at the interval after every process; see planSize.
+	target := opt.MaxProcesses
+	for start := 0; start < target; start += opt.Parallel {
+		recs, err := w.run(start, min(opt.Parallel, target-start))
 		if err != nil {
 			return res, err
 		}
@@ -367,18 +385,50 @@ func Run(opt Options, suite func(*Process) error) (Results, error) {
 				res.Comparisons[j].Reports = append(res.Comparisons[j].Reports, rec.report())
 			}
 		}
+		if res.Processes == opt.MinProcesses {
+			target, res.Precise = res.planSize(opt)
+		}
 		if err := res.pool(opt.Level); err != nil {
 			return res, err
 		}
 		if opt.Progress != nil {
 			opt.Progress(res)
 		}
-		if res.Processes >= opt.MinProcesses && res.Processes%opt.Rotation == 0 && res.precise(opt.AbsPrecision, opt.RelPrecision) {
-			res.Precise = true
-			break
-		}
 	}
 	return res, nil
+}
+
+// planSize decides, once the first stage of MinProcesses has run, how many
+// processes the whole run needs, and whether that is within MaxProcesses.
+//
+// It is Stein's two-stage procedure: each comparison's first-stage scatter
+// gives the number of processes its interval needs (see
+// rtcompare.Pooled.ProcessesFor), the largest of them is rounded up to a whole
+// Rotation or wave and capped at MaxProcesses, and the run then goes that far
+// without looking at the intervals again. Checking the interval after every
+// process instead, and stopping as soon as it was narrow enough, stopped
+// preferentially where the scatter had come out low, and its 95% intervals
+// covered 92 to 94% (issue #119). pool then reports Stein's interval, which
+// covers at its level.
+func (r *Results) planSize(opt Options) (target int, precise bool) {
+	need := r.Processes
+	for i := range r.Comparisons {
+		c := &r.Comparisons[i]
+		if len(c.Reports) < 3 {
+			return opt.MaxProcesses, false
+		}
+		p, err := rtcompare.Combine(c.Reports, opt.Level)
+		if err != nil {
+			// pool reports the error.
+			return opt.MaxProcesses, false
+		}
+		c.firstStage = len(c.Reports)
+		need = max(need, p.ProcessesFor(opt.AbsPrecision, opt.RelPrecision))
+	}
+	if len(r.Comparisons) == 0 || need > opt.MaxProcesses {
+		return opt.MaxProcesses, false
+	}
+	return min(opt.MaxProcesses, roundUp(need, max(opt.Parallel, opt.Rotation))), true
 }
 
 // processSeed is the seed of process i: the same for a given run seed however
@@ -452,6 +502,7 @@ func (opt *Options) resolveCounts() error {
 		return fmt.Errorf("multiproc: MinProcesses must be at least 3, got %d", opt.MinProcesses)
 	}
 	if serial {
+		opt.MinProcesses = roundUp(opt.MinProcesses, opt.Rotation)
 		if opt.MaxProcesses == 0 {
 			opt.MaxProcesses = max(DefaultMaxProcesses, opt.MinProcesses)
 		}
@@ -473,30 +524,27 @@ func roundUp(n, step int) int {
 	return (n + step - 1) / step * step
 }
 
-// pool combines every comparison that at least three processes recorded.
+// pool combines every comparison that at least three processes recorded,
+// with Stein's interval once its first stage is known.
 func (r *Results) pool(level float64) error {
 	for i := range r.Comparisons {
 		c := &r.Comparisons[i]
 		if len(c.Reports) < 3 {
 			continue
 		}
-		p, err := rtcompare.Combine(c.Reports, level)
+		var p rtcompare.Pooled
+		var err error
+		if c.firstStage > 0 {
+			p, err = rtcompare.CombineStaged(c.Reports, c.firstStage, level)
+		} else {
+			p, err = rtcompare.Combine(c.Reports, level)
+		}
 		if err != nil {
 			return fmt.Errorf("multiproc: pooling %q: %w", c.Name, err)
 		}
 		c.Pooled = p
 	}
 	return nil
-}
-
-// precise reports whether every comparison is pooled and meets the stop rule.
-func (r *Results) precise(abs, rel float64) bool {
-	for _, c := range r.Comparisons {
-		if c.Pooled.Processes == 0 || !c.Pooled.Precise(abs, rel) {
-			return false
-		}
-	}
-	return len(r.Comparisons) > 0
 }
 
 // runProcess starts one child and reads back what it recorded.

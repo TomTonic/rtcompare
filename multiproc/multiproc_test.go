@@ -2,6 +2,7 @@ package multiproc
 
 import (
 	"errors"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -209,5 +210,37 @@ func TestRunStopsOnlyAfterAWholeRotation(t *testing.T) {
 	}
 	if res.Processes != 4 || !res.Precise {
 		t.Errorf("expected to stop precisely after 4 processes, got %d (precise %v)", res.Processes, res.Precise)
+	}
+}
+
+// TestRunSizesItselfFromTheFirstStage checks how a run decides how many
+// processes it needs: once, from the scatter of its first stage, and not by
+// looking at the interval after every process, which would stop whenever the
+// processes happened to agree. Six processes scattering by a sample standard
+// deviation of 0.0329 need (2.5706*0.0329/0.02)² = 17.8, so 18 processes, and
+// the run has to run exactly those, even though every later process agrees
+// exactly, and report Stein's interval from the first stage.
+func TestRunSizesItselfFromTheFirstStage(t *testing.T) {
+	res, err := Run(Options{MinProcesses: 6, Args: onlyThisTest(t)},
+		func(p *Process) error {
+			d := 0.05
+			if p.Index < 6 {
+				d += 0.03 * float64(1-2*(p.Index%2))
+			}
+			p.Record("x", rtcompare.Report{Estimate: rtcompare.Estimate{Delta: d, Low: d - 0.001, High: d + 0.001, Level: 0.95}})
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Child {
+		return
+	}
+	p := res.Comparisons[0].Pooled
+	if res.Processes != 18 || !res.Precise || p.Processes != 18 || p.FirstStage != 6 {
+		t.Fatalf("ran %d processes (precise %v), pooled %d with first stage %d; want 18, true, 18, 6", res.Processes, res.Precise, p.Processes, p.FirstStage)
+	}
+	if half, want := (p.High-p.Low)/2, 2.570582*0.0328634/math.Sqrt(18); math.Abs(half-want) > 1e-5 {
+		t.Errorf("half-width %.5f, want Stein's %.5f", half, want)
 	}
 }

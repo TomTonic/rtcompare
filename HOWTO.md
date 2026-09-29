@@ -662,12 +662,17 @@ What happens behind that call, so that you don't have to remember any of it:
   perturbed. That is also why the builders are functions: they have to run
   inside each process, after the perturbation, in the right order. Build
   everything the measurement depends on inside them.
-- **It stops when the answer is precise enough.** At least 5 processes, then
-  more until every comparison's pooled interval is within ±2 percentage
-  points, or within ±10% of the difference itself, and at most 40. It only
-  stops after an even number, so both build orders count equally. Five were
-  enough for data in the cache; far out of it, runs have needed 13 to 40, and
-  where processes scattered by 10 points the rule would have needed over 100.
+- **It runs as many processes as the answer needs.** The first 6 processes
+  show how much the processes scatter. From that, it works out once how many
+  processes every comparison needs for its pooled interval to be within ±2
+  percentage points, or within ±10% of the difference itself, and runs that
+  many, at most 40, always an even number so that both build orders count
+  equally. It deliberately does not look at the interval after every process
+  and stop as soon as it is narrow enough: that stops preferentially when the
+  processes happened to agree, and such intervals covered the truth only 92
+  to 94% of the time instead of 95%. Six were enough for data in the cache;
+  far out of it, runs have needed 13 to 40, and where processes scattered by
+  10 points it would have taken over 100.
 
 Keep the machine awake while this runs: a laptop that goes to sleep pauses the
 measurement for as long as it sleeps. rtcompare notices that
