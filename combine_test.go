@@ -338,3 +338,49 @@ func TestCombineStagedRejectsABadFirstStage(t *testing.T) {
 		t.Errorf("a first stage of every report should give Combine's interval: %+v, %v", whole, err)
 	}
 }
+
+// TestPooledFloorIsTheSystematicBias checks what a pooled difference has to
+// clear to count as resolved. Pooling across processes averages out
+// everything that differs between them, the harness's random error included,
+// so what is left is only an error that repeats in every process. The floor
+// is therefore built from the signed A/A differences: a small real difference
+// resolves even though each process's own floor hides it, a difference inside
+// a systematic A/A bias does not, and reports without A/A differences fall
+// back to the median of the processes' floors.
+func TestPooledFloorIsTheSystematicBias(t *testing.T) {
+	withAA := func(delta float64, aa ...float64) Report {
+		r := perProcess(delta, 0.001)
+		r.ValidationA.Deltas = aa
+		return r
+	}
+	deltas := []float64{0.0030, 0.0031, 0.0029, 0.0030, 0.0031, 0.0029}
+	cases := []struct {
+		name         string
+		aa           []float64
+		wantResolved bool
+		wantBias     float64
+		wantWarning  string
+	}{
+		{"resolves a small difference every single floor hides", []float64{0.004, -0.004, 0.002, -0.002}, true, 0, ""},
+		{"does not resolve a difference inside a systematic bias", []float64{0.002, 0.006}, false, 0.004, "systematic difference"},
+		{"falls back to the median floor without A/A differences", nil, false, 0, "does not clear the 0.50% noise floor"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var reports []Report
+			for _, d := range deltas {
+				reports = append(reports, withAA(d, c.aa...))
+			}
+			p, err := Combine(reports, 0)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p.Resolved != c.wantResolved || math.Abs(p.Bias-c.wantBias) > 1e-12 {
+				t.Errorf("resolved %v with bias %v and floor %v, want %v and %v", p.Resolved, p.Bias, p.NoiseFloor, c.wantResolved, c.wantBias)
+			}
+			if c.wantWarning != "" && !strings.Contains(strings.Join(p.Warnings, "\n"), c.wantWarning) {
+				t.Errorf("warnings %q lack %q", p.Warnings, c.wantWarning)
+			}
+		})
+	}
+}

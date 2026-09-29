@@ -1,6 +1,7 @@
 package multiproc
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"regexp"
@@ -242,5 +243,27 @@ func TestRunSizesItselfFromTheFirstStage(t *testing.T) {
 	}
 	if half, want := (p.High-p.Low)/2, 2.570582*0.0328634/math.Sqrt(18); math.Abs(half-want) > 1e-5 {
 		t.Errorf("half-width %.5f, want Stein's %.5f", half, want)
+	}
+}
+
+// TestRecordCarriesTheAADifferences checks that what a child hands to its
+// parent keeps the signed A/A differences, which the pooled noise floor is
+// built from, through the JSON round trip.
+func TestRecordCarriesTheAADifferences(t *testing.T) {
+	var r rtcompare.Report
+	r.Validated = true
+	r.ValidationA.Deltas = []float64{0.001, -0.002}
+	r.ValidationB.Deltas = []float64{0.003}
+	data, err := json.Marshal(newRecord("x", r))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var back record
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := back.report()
+	if !slices.Equal(got.ValidationA.Deltas, r.ValidationA.Deltas) || !slices.Equal(got.ValidationB.Deltas, r.ValidationB.Deltas) {
+		t.Errorf("A/A differences after the round trip: %v and %v", got.ValidationA.Deltas, got.ValidationB.Deltas)
 	}
 }

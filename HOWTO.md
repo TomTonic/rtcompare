@@ -731,8 +731,19 @@ should be: five observations are five observations. Next to it you get:
   quote.
 - **`I2`** — the share of the scatter that the per-process intervals do not
   explain. Above about 0.5, the differences between processes dominate.
+- **`NoiseFloor` and `Bias`** — the pooled difference has to clear a floor
+  too, but a different one from a single process's. A single process's floor
+  is a high percentile of what identical code reported, because its interval
+  cannot see run-to-run noise. The pooled interval already includes
+  everything that differs between processes, so the only thing left for the
+  floor to catch is an error that repeats in *every* process: a systematic
+  bias of the harness, which the A/A validations measure as `Bias`. That
+  makes the pooled floor far lower than any single process's, which is
+  exactly why pooling can resolve differences smaller than one process ever
+  could.
 - **Warnings** — among them, when processes resolved the difference with
-  opposite signs, each of them confident.
+  opposite signs, each of them confident, and when the A/A validations found
+  a systematic bias.
 
 ## Troubleshooting: what to do, when
 
