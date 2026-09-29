@@ -3,9 +3,12 @@ package rtcompare
 import (
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"runtime"
 	"runtime/debug"
 	"time"
+
+	"github.com/TomTonic/rtcompare/prng"
 )
 
 // Batch runs the code under test exactly n times.
@@ -314,7 +317,7 @@ type CollectOptions struct {
 
 // Collect measures two candidate implementations and returns one timing sample
 // per repeat for each, in nanoseconds per operation. The returned slices are
-// suitable as direct inputs to [CompareSamples] or [CompareSamplesDefault].
+// suitable as direct inputs to [CompareSamples] and [EstimateDifference].
 //
 // Collect owns the measurement loop so that it can control the things that
 // systematically bias a comparison and that are easy to get wrong by hand:
@@ -415,7 +418,7 @@ func (opt CollectOptions) schedule() (schedule, error) {
 	if opt.Repeats == 0 {
 		opt.Repeats = DefaultRepeats
 	}
-	if uint64(opt.Repeats) < MinimumDataPoints {
+	if opt.Repeats < MinimumDataPoints {
 		return schedule{}, fmt.Errorf("rtcompare: Repeats must be at least %d, got %d", MinimumDataPoints, opt.Repeats)
 	}
 	if opt.Warmup < 0 {
@@ -486,13 +489,13 @@ func measureInTurn(cands []Candidate, s schedule) [][]float64 {
 
 	warmUp(cands, s)
 
-	var rng DPRNG
+	var rng prng.DPRNG
 	if s.order == OrderRandom {
-		if s.seed == 0 {
-			rng = NewDPRNG()
-		} else {
-			rng = NewDPRNG(s.seed)
+		seed := s.seed
+		if seed == 0 {
+			seed = rand.Uint64()
 		}
+		rng = prng.NewDPRNG(seed)
 	}
 
 	samples := make([][]float64, len(cands))
@@ -561,10 +564,10 @@ func timeBatch(c Candidate, n uint64, gc bool) int64 {
 	if gc {
 		runtime.GC()
 	}
-	t1 := SampleTime()
+	t1 := sampleTime()
 	c.Batch(n)
-	t2 := SampleTime()
-	elapsed := DiffTimeStamps(t1, t2)
+	t2 := sampleTime()
+	elapsed := diffTimeStamps(t1, t2)
 	if c.Teardown != nil {
 		c.Teardown()
 	}

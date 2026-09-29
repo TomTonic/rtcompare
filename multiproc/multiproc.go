@@ -76,6 +76,7 @@ import (
 	"time"
 
 	"github.com/TomTonic/rtcompare"
+	"github.com/TomTonic/rtcompare/prng"
 )
 
 // The environment variables through which a parent tells a child that it is
@@ -225,10 +226,10 @@ func (p *Process) Record(name string, r rtcompare.Report) {
 
 // Rand returns a generator seeded from this process's seed, independent of the
 // heap perturbation, for shuffling the order in which many fixtures are built;
-// see [rtcompare.DPRNG.Shuffle]. For two fixtures, alternate by Index instead,
+// see [prng.DPRNG.Shuffle]. For two fixtures, alternate by Index instead,
 // which balances exactly where a random draw over a few processes rarely does.
-func (p *Process) Rand() *rtcompare.DPRNG {
-	rng := rtcompare.NewDPRNG(splitmix(p.Seed^0x5DEECE66D) | 1) // zero would ask NewDPRNG for a random seed
+func (p *Process) Rand() *prng.DPRNG {
+	rng := prng.NewDPRNG(p.Seed ^ 0x5DEECE66D)
 	return &rng
 }
 
@@ -238,8 +239,9 @@ type Comparison struct {
 	Name string
 
 	// Reports holds one report per process that recorded it, in process order.
-	// They carry the estimate, noise floor, verdict, suspension and warnings of
-	// each process, and of the validations only the A/A differences in
+	// They carry the estimate, confidences, noise floor, verdict, suspension
+	// and warnings of each process, and of the validations only the A/A
+	// differences in
 	// ValidationA.Deltas and ValidationB.Deltas; the raw samples and the rest
 	// of the validations stay in the child.
 	Reports []rtcompare.Report
@@ -642,23 +644,23 @@ type childFile struct {
 	Error   string   `json:"error,omitempty"`
 }
 
-// record is the part of a Report that crosses the process boundary. The full
-// Report cannot: its Confidence map has float keys, which JSON does not allow,
-// and its samples are not needed for pooling. Of the validations, only the
+// record is the part of a Report that crosses the process boundary; the raw
+// samples are not needed for pooling and stay in the child. Of the validations, only the
 // signed A/A differences cross, which rtcompare.Combine reads the systematic
 // harness bias from.
 type record struct {
-	Name       string             `json:"name"`
-	NsPerOpA   float64            `json:"ns_a"`
-	NsPerOpB   float64            `json:"ns_b"`
-	Estimate   rtcompare.Estimate `json:"estimate"`
-	NoiseFloor float64            `json:"noise_floor"`
-	Validated  bool               `json:"validated"`
-	Resolved   bool               `json:"resolved"`
-	Suspended  time.Duration      `json:"suspended"`
-	Warnings   []string           `json:"warnings,omitempty"`
-	AADeltasA  []float64          `json:"aa_deltas_a,omitempty"`
-	AADeltasB  []float64          `json:"aa_deltas_b,omitempty"`
+	Name       string                `json:"name"`
+	NsPerOpA   float64               `json:"ns_a"`
+	NsPerOpB   float64               `json:"ns_b"`
+	Estimate   rtcompare.Estimate    `json:"estimate"`
+	NoiseFloor float64               `json:"noise_floor"`
+	Validated  bool                  `json:"validated"`
+	Resolved   bool                  `json:"resolved"`
+	Suspended  time.Duration         `json:"suspended"`
+	Warnings   []string              `json:"warnings,omitempty"`
+	AADeltasA  []float64             `json:"aa_deltas_a,omitempty"`
+	AADeltasB  []float64             `json:"aa_deltas_b,omitempty"`
+	Confidence rtcompare.Confidences `json:"confidence,omitempty"`
 }
 
 func newRecord(name string, r rtcompare.Report) record {
@@ -667,6 +669,7 @@ func newRecord(name string, r rtcompare.Report) record {
 		NoiseFloor: r.NoiseFloor, Validated: r.Validated, Resolved: r.Resolved,
 		Suspended: r.Suspended, Warnings: r.Warnings,
 		AADeltasA: r.ValidationA.Deltas, AADeltasB: r.ValidationB.Deltas,
+		Confidence: r.Confidence,
 	}
 }
 
@@ -674,7 +677,7 @@ func (rec record) report() rtcompare.Report {
 	r := rtcompare.Report{
 		NsPerOpA: rec.NsPerOpA, NsPerOpB: rec.NsPerOpB, Estimate: rec.Estimate,
 		NoiseFloor: rec.NoiseFloor, Validated: rec.Validated, Resolved: rec.Resolved,
-		Suspended: rec.Suspended, Warnings: rec.Warnings,
+		Suspended: rec.Suspended, Warnings: rec.Warnings, Confidence: rec.Confidence,
 	}
 	r.ValidationA.Deltas, r.ValidationB.Deltas = rec.AADeltasA, rec.AADeltasB
 	return r

@@ -4,24 +4,49 @@ import (
 	"fmt"
 	"math"
 	"slices"
-)
 
-// RTcomparisonResult holds the result of comparing two sets of runtime measurements.
-// For each requested relative speedup threshold it contains the estimated confidence
-// that the speedup of sample A over sample B meets or exceeds that threshold.
-type RTcomparisonResult struct {
-	// RelativeSpeedupSampleAvsSampleB is the relative speedup threshold that was evaluated.
-	RelativeSpeedupSampleAvsSampleB float64
-	// Confidence is the estimated confidence (in [0,1]) that the relative speedup of sample A over sample B
-	// meets or exceeds RelativeSpeedupSampleAvsSampleB.
-	Confidence float64
-}
+	"github.com/TomTonic/rtcompare/prng"
+)
 
 // MinimumDataPoints is the fewest measurements per candidate that
 // [CompareSamples], [EstimateDifference] and [Collect] accept. Below it a
 // median has too few values to resample from for the bootstrap to say
 // anything.
-const MinimumDataPoints uint64 = 11
+const MinimumDataPoints = 11
+
+// ThresholdConfidence is the confidence that A beats B by at least Threshold,
+// a relative difference as in [Estimate].Delta: the share of bootstrap
+// replicates in which 1 - median(A)/median(B) >= Threshold.
+type ThresholdConfidence struct {
+	Threshold  float64 `json:"threshold"`
+	Confidence float64 `json:"confidence"`
+}
+
+// Confidences holds one [ThresholdConfidence] per distinct threshold, in
+// ascending order of threshold, as [CompareSamples], [BootstrapConfidence],
+// [BlockBootstrapConfidence] and Report.Confidence return them.
+type Confidences []ThresholdConfidence
+
+// At returns the confidence for the given threshold, and whether it is there.
+// Thresholds match when they differ by no more than a relative 1e-9, so that
+// a threshold computed the way it was passed in, such as F2T(1.1) or
+// 0.1+0.05, finds its entry.
+func (c Confidences) At(threshold float64) (confidence float64, ok bool) {
+	for _, tc := range c {
+		if tc.Threshold == threshold {
+			return tc.Confidence, true
+		}
+	}
+	if math.IsInf(threshold, 0) || math.IsNaN(threshold) {
+		return 0, false
+	}
+	for _, tc := range c {
+		if math.Abs(tc.Threshold-threshold) <= 1e-9*math.Max(1, math.Abs(threshold)) {
+			return tc.Confidence, true
+		}
+	}
+	return 0, false
+}
 
 // DefaultResamples is a sensible package-level default for bootstrap resamples.
 // Use this when you want a balanced trade-off between Monte-Carlo precision and
@@ -90,8 +115,9 @@ const DefaultResamples uint64 = 5_000
 //     least that relative fraction.
 //
 //   - resamples: number of bootstrap resamples to run (larger → more precise estimates,
-//     longer runtime). See the note in `BootstrapConfidence` for guidance and literature
-//     references about choosing the number of resamples.
+//     longer runtime); zero selects [DefaultResamples]. See the note in
+//     `BootstrapConfidence` for guidance and literature references about choosing
+//     the number of resamples.
 //
 // # Why the median
 //
@@ -125,9 +151,9 @@ const DefaultResamples uint64 = 5_000
 // interference to 3.1% at 30% and 20.5% at 40%, so a setup in which the median
 // is failing announces itself as one whose measurements are worthless anyway.
 //
-// Returns a slice of RTcomparisonResult where each entry contains the requested
-// relative threshold and the corresponding confidence in [0,1]. If either input
-// contains fewer than `MinimumDataPoints` values an error is returned.
+// Returns the [Confidences], one entry per requested relative threshold with
+// its confidence in [0,1]. If either input contains fewer than
+// `MinimumDataPoints` values an error is returned.
 //
 // The results are ordered by ascending threshold and contain one entry per
 // *distinct* threshold: passing the same value several times yields a single
@@ -146,9 +172,9 @@ const DefaultResamples uint64 = 5_000
 //     -Inf always yields confidence 1, and no finite delta reaches +Inf, so
 //     +Inf always yields confidence 0. They are of little practical use as
 //     thresholds, but they do not misreport anything.
-func CompareSamples(measurementsA, measurementsB []float64, relativeGains []float64, resamples uint64) (result []RTcomparisonResult, err error) {
-	if uint64(len(measurementsA)) < MinimumDataPoints || uint64(len(measurementsB)) < MinimumDataPoints {
-		return []RTcomparisonResult{}, fmt.Errorf("not enough data points: need at least %d measurements for each input", MinimumDataPoints)
+func CompareSamples(measurementsA, measurementsB []float64, relativeGains []float64, resamples uint64) (Confidences, error) {
+	if len(measurementsA) < MinimumDataPoints || len(measurementsB) < MinimumDataPoints {
+		return nil, fmt.Errorf("not enough data points: need at least %d measurements for each input", MinimumDataPoints)
 	}
 	// Reject NaN thresholds here, at the boundary, while the caller's own index
 	// is still available to name in the error. A NaN cannot be reported on: it
@@ -157,22 +183,14 @@ func CompareSamples(measurementsA, measurementsB []float64, relativeGains []floa
 	// real one.
 	for i, g := range relativeGains {
 		if math.IsNaN(g) {
-			return []RTcomparisonResult{}, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"relativeGains[%d] is NaN, which is not a usable threshold; note that F2T returns NaN for factors <= 0 or NaN, so check its result before passing it on", i)
 		}
 	}
-	thresholds := uniqueSortedThresholds(relativeGains)
-
-	conf := BootstrapConfidence(measurementsA, measurementsB, thresholds, resamples, 0)
-
-	for _, t := range thresholds {
-		r := RTcomparisonResult{
-			RelativeSpeedupSampleAvsSampleB: t,
-			Confidence:                      conf[t],
-		}
-		result = append(result, r)
+	if resamples == 0 {
+		resamples = DefaultResamples
 	}
-	return result, nil
+	return BootstrapConfidence(measurementsA, measurementsB, uniqueSortedThresholds(relativeGains), resamples, 0), nil
 }
 
 // dedupeSortedCopy returns the distinct values of gains in ascending order.
@@ -206,18 +224,6 @@ func uniqueSortedThresholds(gains []float64) []float64 {
 	return dedupeSortedCopy(gains)
 }
 
-// CompareSamplesDefault calls [CompareSamples] with [DefaultResamples].
-// This convenience wrapper avoids repeating the numeric literal in callers
-// and documents the recommended default in the public API.
-func CompareSamplesDefault(measurementsA, measurementsB []float64, relativeGains []float64) (result []RTcomparisonResult, err error) {
-	return CompareSamples(measurementsA, measurementsB, relativeGains, DefaultResamples)
-}
-
-// Deprecated: Use CompareSamples instead. This function is retained for backward compatibility.
-func CompareRuntimes(measurementsA, measurementsB []float64, relativeGains []float64, resamples uint64) (result []RTcomparisonResult, err error) {
-	return CompareSamples(measurementsA, measurementsB, relativeGains, resamples)
-}
-
 // bootstrapSample returns a bootstrap sample (sampling with replacement) drawn
 // from xs. The returned slice has the same length as xs and the input is not
 // modified. An empty xs yields an empty sample.
@@ -238,7 +244,7 @@ func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
 	if prngSeed != 0 {
 		return bootstrapSampleSeeded(xs, prngSeed)
 	}
-	return bootstrapSampleCrypto(xs, NewCPRNG(bootstrapCPRNGBufferBytes))
+	return bootstrapSampleCrypto(xs, prng.NewCPRNG(bootstrapCPRNGBufferBytes))
 }
 
 // bootstrapCPRNGBufferBytes is the buffer size used for the cryptographic
@@ -256,7 +262,7 @@ const bootstrapCPRNGBufferBytes = 8192
 // with prngSeed. It is the single-sample convenience form; callers drawing many
 // samples should use bootstrapSampleDPRNG with one shared generator.
 func bootstrapSampleSeeded(xs []float64, prngSeed uint64) []float64 {
-	rng := NewDPRNG(prngSeed)
+	rng := prng.NewDPRNG(prngSeed)
 	return bootstrapSampleDPRNG(xs, &rng)
 }
 
@@ -278,7 +284,7 @@ func bootstrapSampleSeeded(xs []float64, prngSeed uint64) []float64 {
 // does not move a median; effective resample counts matched the requested ones
 // at every supported sample size. Using one stream is nevertheless the sounder
 // construction, and it costs nothing.
-func bootstrapSampleDPRNG(xs []float64, rng *DPRNG) []float64 {
+func bootstrapSampleDPRNG(xs []float64, rng *prng.DPRNG) []float64 {
 	n := len(xs)
 	sample := make([]float64, n)
 	if n == 0 {
@@ -298,7 +304,7 @@ func bootstrapSampleDPRNG(xs []float64, rng *DPRNG) []float64 {
 // Sharing one stream across samples, and across both inputs of a comparison, is
 // sound: the draws are consecutive values from a single cryptographic sequence
 // and are therefore independent of one another.
-func bootstrapSampleCrypto(xs []float64, rng *CPRNG) []float64 {
+func bootstrapSampleCrypto(xs []float64, rng *prng.CPRNG) []float64 {
 	n := len(xs)
 	sample := make([]float64, n)
 	if n == 0 {
@@ -319,18 +325,15 @@ func bootstrapSampleCrypto(xs []float64, rng *CPRNG) []float64 {
 //	delta = 1 - median(A_sample)/median(B_sample)
 //
 // A positive delta indicates A is faster than B by that relative amount. For every threshold t in
-// `relativeGains` the function increments a counter when delta >= t. After all replicates it returns a map
-// that maps each threshold to the estimated confidence (fraction of replicates meeting delta >= t).
+// `relativeGains` the function increments a counter when delta >= t. After all replicates it returns,
+// for each threshold, the estimated confidence: the fraction of replicates meeting delta >= t.
 //
 // Numerical and edge-case behavior (important):
-//   - If `resamples` is zero the function returns a map with each threshold mapped to math.NaN().
-//   - If either sample median is NaN (for example QuickMedian returned NaN for an empty sample), the
-//     replicate produces delta = NaN and that replicate does not count as meeting any threshold.
-//   - To avoid divide-by-zero and extreme ratios when median(B_sample) == 0 (or is numerically
-//     extremely small), the implementation uses a small, scale-aware epsilon fallback. Concretely it
-//     chooses an epsilon = max(|median(B)| * rel, SmallestNonzeroFloat64) with a small relative factor
-//     (e.g. rel = 1e-12). If |median(B)| < epsilon the code uses epsilon as the denominator. This
-//     guarantees a finite, bounded delta while preserving the correct ratio for typical non-zero medians.
+//   - If `resamples` is zero every confidence is math.NaN().
+//   - If either sample median is NaN (for an empty sample), the replicate produces delta = NaN and
+//     that replicate does not count as meeting any threshold.
+//   - A median(B_sample) of zero with a non-zero median(A_sample) gives an infinite delta, which is
+//     the honest answer and a sign that a batch fitted inside one clock tick; see relativeDelta.
 //   - If both medians are zero (or both are equal/infinite in the same direction), the replicate sets
 //     delta = 0.0 (no relative difference).
 //
@@ -352,21 +355,21 @@ func bootstrapSampleCrypto(xs []float64, rng *CPRNG) []float64 {
 //
 // Returns:
 //
-//	A map[float64]float64 where each key is a threshold from `relativeGains` and the corresponding value is
-//	the estimated confidence in [0,1] that the relative speedup of A over B is at least that threshold.
+//	The [Confidences], one entry per distinct threshold in ascending order, each with the estimated
+//	confidence in [0,1] that the relative speedup of A over B is at least that threshold.
 //
 // Repeated thresholds are collapsed before counting, so the returned confidences
 // are always in [0,1]. Without that step a threshold listed n times would score
 // n hits per replicate and report a confidence of n. The caller's slice is not
 // modified.
 //
-// NaN thresholds are silently skipped and do not appear in the returned map.
-// This function has no error channel, and a NaN key would be an entry no caller
-// could ever look up, because NaN compares equal to nothing including itself.
-// Prefer CompareSamples, which rejects NaN thresholds with a proper error.
+// NaN thresholds are silently skipped and do not appear in the result. This
+// function has no error channel, and a NaN entry could never be found again,
+// because NaN compares equal to nothing including itself. Prefer
+// CompareSamples, which rejects NaN thresholds with a proper error.
 // Infinities are kept: they behave consistently, with -Inf mapping to 1 and
 // +Inf to 0.
-func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, prngSeed uint64) map[float64]float64 {
+func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, prngSeed uint64) Confidences {
 	// Block length one is single-observation resampling: the shared core draws
 	// exactly the values the dedicated sampler used to, in the same order.
 	return bootstrapConfidence(A, B, relativeGains, resamples, 1, prngSeed)
@@ -374,7 +377,7 @@ func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 
 // bootstrapConfidence is the shared implementation of BootstrapConfidence and
 // BlockBootstrapConfidence. A blockLength of one gives the ordinary bootstrap.
-func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, blockLength int, prngSeed uint64) (confidenceForThreshold map[float64]float64) {
+func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, blockLength int, prngSeed uint64) Confidences {
 	// Zero asks for the automatic length; anything negative is a caller error
 	// with no sensible reading, so it takes the same route rather than reaching
 	// blockSample as a nonsensical length.
@@ -387,18 +390,16 @@ func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 	thresholds := dedupeSortedCopy(relativeGains)
 	// NaN thresholds are dropped rather than reported, because this function has
 	// no error channel. Keeping them would be worse than useless: delta >= NaN is
-	// never true, so a NaN would score zero, and a NaN map key can be written but
-	// never read back, so the entry would be unreachable for every caller.
-	// CompareSamples rejects them outright.
+	// never true, so a NaN would score zero, and no caller could look the entry
+	// up again, since NaN equals nothing. CompareSamples rejects them outright.
 	thresholds = slices.DeleteFunc(thresholds, math.IsNaN)
 
-	confidenceForThreshold = make(map[float64]float64, len(thresholds))
-
+	result := make(Confidences, len(thresholds))
+	for j, threshold := range thresholds {
+		result[j] = ThresholdConfidence{Threshold: threshold, Confidence: math.NaN()}
+	}
 	if resamples == 0 {
-		for _, threshold := range thresholds {
-			confidenceForThreshold[threshold] = math.NaN()
-		}
-		return confidenceForThreshold
+		return result
 	}
 
 	// Counts are indexed by position rather than keyed by threshold value, so
@@ -410,8 +411,8 @@ func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 	for range resamples {
 		sampleA := blockSample(A, blockLength, next)
 		sampleB := blockSample(B, blockLength, next)
-		medA := QuickMedian(sampleA)
-		medB := QuickMedian(sampleB)
+		medA := quickMedian(sampleA)
+		medB := quickMedian(sampleB)
 
 		delta := relativeDelta(medA, medB)
 
@@ -428,10 +429,10 @@ func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 		}
 	}
 
-	for j, threshold := range thresholds {
-		confidenceForThreshold[threshold] = float64(counts[j]) / float64(resamples)
+	for j := range result {
+		result[j].Confidence = float64(counts[j]) / float64(resamples)
 	}
-	return confidenceForThreshold
+	return result
 }
 
 // F2T (FactorToThreshold) converts a multiplicative speedup timesFaster (e.g. 3.0 => A is 3× faster)
@@ -573,7 +574,7 @@ func AutoBlockLength(n int) int {
 //
 // All other behaviour, including threshold handling and the meaning of prngSeed,
 // is that of [BootstrapConfidence].
-func BlockBootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, blockLength int, prngSeed uint64) map[float64]float64 {
+func BlockBootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, blockLength int, prngSeed uint64) Confidences {
 	return bootstrapConfidence(A, B, relativeGains, resamples, blockLength, prngSeed)
 }
 
@@ -587,9 +588,9 @@ func BlockBootstrapConfidence(A, B []float64, relativeGains []float64, resamples
 // same replicates for the same seed.
 func bootstrapStream(seed uint64) func(uint32) uint32 {
 	if seed == 0 {
-		return NewCPRNG(bootstrapCPRNGBufferBytes).Uint32N
+		return prng.NewCPRNG(bootstrapCPRNGBufferBytes).Uint32N
 	}
-	rng := NewDPRNG(seed)
+	rng := prng.NewDPRNG(seed)
 	return rng.Uint32N
 }
 

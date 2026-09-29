@@ -1,6 +1,7 @@
 package rtcompare
 
 import (
+	"github.com/TomTonic/rtcompare/prng"
 	"math"
 	"slices"
 	"strings"
@@ -15,7 +16,7 @@ func steadyCandidate(cost uint64) Candidate {
 	return Candidate{
 		Name: "steady",
 		Batch: func(n uint64) {
-			rng := NewDPRNG(0x2468)
+			rng := prng.NewDPRNG(0x2468)
 			var acc uint64
 			for range n * cost {
 				acc ^= rng.Uint64()
@@ -103,7 +104,7 @@ func TestValidateHarnessCalibratesOnceWhenInnerLoopsUnset(t *testing.T) {
 	seen := map[uint64]int{}
 	probe := Candidate{Name: "probe", Batch: func(n uint64) {
 		seen[n]++
-		rng := NewDPRNG(0x99)
+		rng := prng.NewDPRNG(0x99)
 		var acc uint64
 		for range n {
 			acc ^= rng.Uint64()
@@ -198,8 +199,8 @@ func TestTieSplitIdentity(t *testing.T) {
 	for i := range constant {
 		constant[i] = 10
 	}
-	confAB := BootstrapConfidence(constant, constant, []float64{0.0}, 1000, 0)[0.0]
-	confBA := BootstrapConfidence(constant, constant, []float64{0.0}, 1000, 0)[0.0]
+	confAB := confAt(BootstrapConfidence(constant, constant, []float64{0.0}, 1000, 0), 0.0)
+	confBA := confAt(BootstrapConfidence(constant, constant, []float64{0.0}, 1000, 0), 0.0)
 
 	if confAB != 1.0 || confBA != 1.0 {
 		t.Fatalf("all-tie input should give confidence 1 in both directions, got %v and %v", confAB, confBA)
@@ -219,8 +220,8 @@ func TestTieSplitIdentity(t *testing.T) {
 		fast[i] = 10
 		slow[i] = 20
 	}
-	confAB = BootstrapConfidence(fast, slow, []float64{0.0}, 1000, 0)[0.0]
-	confBA = BootstrapConfidence(slow, fast, []float64{0.0}, 1000, 0)[0.0]
+	confAB = confAt(BootstrapConfidence(fast, slow, []float64{0.0}, 1000, 0), 0.0)
+	confBA = confAt(BootstrapConfidence(slow, fast, []float64{0.0}, 1000, 0), 0.0)
 	if tie := confAB + confBA - 1; tie != 0.0 {
 		t.Errorf("separated inputs should produce no ties, got a rate of %v", tie)
 	}
@@ -337,7 +338,7 @@ func TestValidatePairInterleavesTheCandidates(t *testing.T) {
 	mk := func(name string) Candidate {
 		return Candidate{Name: name, Batch: func(n uint64) {
 			log = append(log, name)
-			rng := NewDPRNG(0x2468)
+			rng := prng.NewDPRNG(0x2468)
 			var acc uint64
 			for range n {
 				acc ^= rng.Uint64()

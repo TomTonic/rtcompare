@@ -22,20 +22,20 @@ const maxIterationsForCalibration = 10_000_000
 //
 // A fixed smaller constant would be a guess about platforms this was not
 // measured on. Stopping after a stable run adapts instead: it spends whatever
-// the platform needs and no more. Windows in particular reaches SampleTime
+// the platform needs and no more. Windows in particular reaches sampleTime
 // through a LazyProc call rather than a vDSO, which is a different and more
 // expensive path, so a hand-tuned iteration count would be poorly informed.
 const stableRunForCalibration = 50_000
 
 var (
-	// precision holds the smallest interval measurable via SampleTime() on the
+	// precision holds the smallest interval measurable via sampleTime() on the
 	// runtime system, in nanoseconds. See GetSampleTimePrecision.
 	precision     int64 = -1
 	precisionOnce sync.Once
 )
 
 // GetSampleTimePrecision returns the smallest interval that can actually be
-// measured with SampleTime() on this machine, in nanoseconds. It is determined
+// measured with sampleTime() on this machine, in nanoseconds. It is determined
 // empirically on first use and cached for the lifetime of the process.
 //
 // This is the practical floor of the measurement: no single timing can be
@@ -45,7 +45,7 @@ var (
 //
 // It is deliberately not "the clock's resolution", and the two can differ.
 // What the function observes is the smallest gap it can produce between two
-// consecutive SampleTime calls, which is bounded from below by whichever is
+// consecutive sampleTime calls, which is bounded from below by whichever is
 // larger: the clock's tick, or the cost of the two calls themselves. Which one
 // dominates depends on the platform.
 //
@@ -73,7 +73,7 @@ var (
 // In every one of those cases the returned number answers the same question and
 // is the one worth having: this is as fine as measurement gets here. Note that
 // this is unrelated to the coarse Windows system clock of about 15.6 ms that
-// GetSystemTimeAsFileTime is subject to; SampleTime does not use it.
+// GetSystemTimeAsFileTime is subject to; sampleTime does not use it.
 func GetSampleTimePrecision() int64 {
 	precisionOnce.Do(func() {
 		precision = calcMinTimeSample()
@@ -93,9 +93,9 @@ func calcMinTimeSample() int64 {
 	var minDiff = int64(math.MaxInt64) // initial large value
 	sinceImprovement := 0
 	for range maxIterationsForCalibration {
-		t1 := SampleTime()
-		t2 := SampleTime()
-		diff := DiffTimeStamps(t1, t2)
+		t1 := sampleTime()
+		t2 := sampleTime()
+		diff := diffTimeStamps(t1, t2)
 		if diff > 0 && diff < minDiff {
 			minDiff = diff
 			sinceImprovement = 0

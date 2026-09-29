@@ -2,11 +2,14 @@ package rtcompare
 
 import (
 	"math"
+	"math/rand/v2"
 	"slices"
+
+	"github.com/TomTonic/rtcompare/prng"
 )
 
 // Median computes the median of the provided slice of float64.
-// If data is empty, Median returns 0.0.
+// If data is empty, Median returns NaN, since an empty set has no median.
 // The function makes a copy of the input and sorts the copy, so the original slice is not modified.
 // For an odd-length slice it returns the middle element; for an even-length
 // slice it returns the mean of the two middle elements. Returning either one of
@@ -15,7 +18,7 @@ import (
 // Time complexity: O(n log n). Space complexity: O(n) due to the copy required for sorting.
 func Median(data []float64) float64 {
 	if len(data) == 0 {
-		return 0
+		return math.NaN()
 	}
 	dataCopy := make([]float64, len(data))
 	copy(dataCopy, data)
@@ -28,74 +31,7 @@ func Median(data []float64) float64 {
 	return dataCopy[l/2]
 }
 
-// Statistics computes the arithmetic mean, population variance, and standard deviation
-// of the provided slice of float64 values.
-//
-// It returns three float64s in order: mean, variance, and stddev.
-//
-// The variance returned is the population variance (sum of squared deviations divided by n).
-// The standard deviation is the square root of that variance.
-//
-// If the input slice is empty, the function returns mean = 0 and variance = stddev = -1
-// to indicate that the values are undefined for an empty dataset.
-func Statistics(data []float64) (mean, variance, stddev float64) {
-	if len(data) == 0 {
-		return 0, -1, -1
-	}
-
-	var sum float64
-	n := float64(len(data))
-
-	for _, value := range data {
-		sum += value
-	}
-	mean = sum / n
-
-	for _, value := range data {
-		variance += (value - mean) * (value - mean)
-	}
-	variance /= n
-	stddev = math.Sqrt(variance)
-	return
-}
-
-// FloatsEqualWithTolerance reports whether f1 and f2 are approximately equal,
-// using a percentage-based absolute tolerance computed from each operand.
-//
-// The tolerancePercentage parameter is interpreted as a percentage (for example,
-// 5 means 5%). For each value v the function computes
-//
-//	absTol = |v * tolerancePercentage / 100|
-//
-// and checks whether the other value lies within [v - absTol, v + absTol].
-// The function returns true if either check succeeds (i.e. if f2 is within the
-// tolerance computed from f1 OR f1 is within the tolerance computed from f2).
-//
-// Important notes:
-//   - The comparison uses absolute tolerances derived from the operands, which
-//     makes the check effectively two-sided: a small value may be considered
-//     equal to a much larger one if the larger value's tolerance range contains
-//     the smaller value.
-//   - A tolerancePercentage of 0 requires exact equality.
-//   - Negative tolerancePercentage values are treated equivalently to their
-//     absolute value because the computed tolerance is wrapped with math.Abs.
-//   - Comparisons involving NaN follow IEEE754 semantics and will not be true;
-//     interactions with ±Inf follow IEEE754 and may produce true results when a
-//     computed tolerance range is infinite.
-//   - This function performs simple arithmetic checks and returns a boolean.
-func FloatsEqualWithTolerance(f1, f2, tolerancePercentage float64) bool {
-	absTol1 := math.Abs(f1 * tolerancePercentage / 100)
-	if f1-absTol1 <= f2 && f1+absTol1 >= f2 {
-		return true
-	}
-	absTol2 := math.Abs(f2 * tolerancePercentage / 100)
-	if f2-absTol2 <= f1 && f2+absTol2 >= f1 {
-		return true
-	}
-	return false
-}
-
-// Partition rearranges xs around a pivot and returns its final index
+// partition rearranges xs around a pivot and returns its final index.
 func partition(xs []float64, low, high uint64) uint64 {
 	pivot := xs[high]
 	i := low
@@ -121,7 +57,9 @@ func quickselect(xs []float64, k uint64) float64 {
 	if k >= uint64(len(xs)) {
 		return math.NaN()
 	}
-	rng := NewDPRNG()
+	// Random pivots guard against inputs that happen to be ordered; the
+	// generator only picks positions, so a fast non-deterministic seed will do.
+	rng := prng.NewDPRNG(rand.Uint64())
 	low, high := uint64(0), uint64(len(xs)-1)
 	for low <= high {
 		pivotIndex := rng.Uint64()%(high-low+1) + low
@@ -138,12 +76,13 @@ func quickselect(xs []float64, k uint64) float64 {
 	return xs[k] // fallback
 }
 
-// QuickMedian returns the median in expected O(n) time.
+// quickMedian returns the median in expected O(n) time. It exists for the
+// bootstrap, which takes two medians per replicate of slices it owns.
 // In case of an odd number of elements, it returns the middle one.
 // In case of an even number of elements, it returns the mean of the two middle ones.
 // Returns math.NaN() for an empty input slice.
 // Note: This function modifies the input array. To avoid this, pass a copy.
-func QuickMedian(xs []float64) float64 {
+func quickMedian(xs []float64) float64 {
 	if len(xs) == 0 {
 		return math.NaN()
 	}

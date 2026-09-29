@@ -1,5 +1,6 @@
-// Command rtcompare-example compares two median implementations and reports
-// whether the difference between them is one this machine can actually resolve.
+// Command rtcompare-example compares two ways of sorting a slice, the generic
+// slices.Sort and sort.Slice with a comparison closure, and reports whether
+// the difference between them is one this machine can actually resolve.
 //
 // The comparison itself is the least interesting part. What the example is
 // really about is everything around it: sizing the batches so that a difference
@@ -14,8 +15,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"slices"
+	"sort"
 
 	"github.com/TomTonic/rtcompare"
+	"github.com/TomTonic/rtcompare/prng"
 )
 
 // sink absorbs the results of measured work. Assigning to a package-level
@@ -27,23 +31,23 @@ var sink float64
 const arraySize = 50
 
 func main() {
-	// Both candidates refresh their input inside the loop, because QuickMedian
-	// mutates what it is given and the two must do the same work per operation
+	// Both candidates refresh their input inside the loop, because sorting
+	// changes what it is given and the two must do the same work per operation
 	// to be comparable. That refresh is measured along with the candidate and
 	// dilutes the difference between them; see the note on attenuation in the
 	// Collect documentation. It cannot be hoisted into Setup, because it has to
 	// happen per operation rather than per batch.
-	quick := medianCandidate("QuickMedian", rtcompare.QuickMedian)
-	sorting := medianCandidate("Median", rtcompare.Median)
+	generic := sortCandidate("slices.Sort", slices.Sort[[]float64])
+	closure := sortCandidate("sort.Slice", func(xs []float64) { sort.Slice(xs, func(i, j int) bool { return xs[i] < xs[j] }) })
 
 	// Everything is left at its default: the batches are sized so the clock
 	// contributes at most a tenth of a percent, both candidates are validated
 	// against themselves, the measurement order is interleaved, and the
 	// resampling scheme is chosen from the dependence actually observed.
-	fmt.Println("Comparing QuickMedian against Median. This validates the")
+	fmt.Println("Comparing slices.Sort against sort.Slice. This validates the")
 	fmt.Println("harness against each candidate first, so it takes a few seconds.")
 
-	report, err := rtcompare.Compare(quick, sorting, rtcompare.CompareOptions{
+	report, err := rtcompare.Compare(generic, closure, rtcompare.CompareOptions{
 		Collect:    rtcompare.CollectOptions{GCBetween: true},
 		Thresholds: []float64{0.05, 0.10, 0.20, 0.30},
 	})
@@ -79,7 +83,7 @@ func main() {
 	for _, v := range []struct {
 		name string
 		val  rtcompare.HarnessValidation
-	}{{"QuickMedian", report.ValidationA}, {"Median", report.ValidationB}} {
+	}{{"slices.Sort", report.ValidationA}, {"sort.Slice", report.ValidationB}} {
 		fmt.Printf("\n%s:\n%s\n", v.name, v.val)
 	}
 
@@ -88,7 +92,7 @@ func main() {
 	for _, d := range []struct {
 		name string
 		rep  rtcompare.DriftReport
-	}{{"QuickMedian", report.DriftA}, {"Median", report.DriftB}} {
+	}{{"slices.Sort", report.DriftA}, {"sort.Slice", report.DriftB}} {
 		if d.rep.N > 0 && d.rep.Drifted(0.05) {
 			fmt.Printf("\nnote: %s %s\n", d.name, d.rep)
 		}
@@ -96,13 +100,12 @@ func main() {
 
 	if report.BlockLength > 1 {
 		fmt.Printf("\nThe samples were correlated with their neighbours (%+.3f), so they were\n"+
-			"resampled in blocks of %d rather than one at a time. Median allocates a copy on\n"+
-			"every call, which tends to put it there.\n", report.Autocorrelation, report.BlockLength)
+			"resampled in blocks of %d rather than one at a time.\n", report.Autocorrelation, report.BlockLength)
 	}
 
-	fmt.Println("\nConfidence that QuickMedian beats Median by at least:")
-	for _, t := range []float64{0.05, 0.10, 0.20, 0.30} {
-		fmt.Printf("  %6.2f%%   %7.2f%%\n", t*100, report.Confidence[t]*100)
+	fmt.Println("\nConfidence that slices.Sort beats sort.Slice by at least:")
+	for _, c := range report.Confidence {
+		fmt.Printf("  %6.2f%%   %7.2f%%\n", c.Threshold*100, c.Confidence*100)
 	}
 
 	// sink is never meant to be read for its value, only written to during the
@@ -117,12 +120,13 @@ func main() {
 	_ = sink
 }
 
-// medianCandidate wraps one median implementation as a candidate.
-func medianCandidate(name string, median func([]float64) float64) rtcompare.Candidate {
+// sortCandidate wraps one sorting function as a candidate that sorts a fresh
+// slice of random values per operation and reads its middle element.
+func sortCandidate(name string, sortFloats func([]float64)) rtcompare.Candidate {
 	return rtcompare.Candidate{
 		Name: name,
 		Batch: func(n uint64) {
-			rng := rtcompare.NewDPRNG(0x5EED)
+			rng := prng.NewDPRNG(0x5EED)
 			work := make([]float64, arraySize)
 			var acc float64
 			for range n {
@@ -131,7 +135,8 @@ func medianCandidate(name string, median func([]float64) float64) rtcompare.Cand
 				for i := range work {
 					work[i] = rng.Float64()
 				}
-				acc += median(work)
+				sortFloats(work)
+				acc += work[arraySize/2]
 			}
 			sink += acc
 		},

@@ -538,8 +538,8 @@ func (r *aaRuns) add(sampleA, sampleB []float64) {
 	// collapses to P(medA < medB) + P(tie)/2, and confAB + confBA - 1
 	// recovers the tie rate. Both follow from the public API alone.
 	seedAB, seedBA := r.seeds()
-	confAB := BootstrapConfidence(sampleA, sampleB, []float64{0.0}, r.opt.Resamples, seedAB)[0.0]
-	confBA := BootstrapConfidence(sampleB, sampleA, []float64{0.0}, r.opt.Resamples, seedBA)[0.0]
+	confAB := BootstrapConfidence(sampleA, sampleB, []float64{0.0}, r.opt.Resamples, seedAB)[0].Confidence
+	confBA := BootstrapConfidence(sampleB, sampleA, []float64{0.0}, r.opt.Resamples, seedBA)[0].Confidence
 	r.confidences = append(r.confidences, (confAB+1-confBA)/2)
 	r.tieRates = append(r.tieRates, math.Max(0, confAB+confBA-1))
 
@@ -616,8 +616,8 @@ func (r *aaRuns) result(innerLoops uint64) HarnessValidation {
 	}
 }
 
-// medianOrZero is Median with an empty input mapping to zero rather than to the
-// zero Median itself returns, so that callers need not distinguish them.
+// medianOrZero is Median with an empty input mapping to zero rather than to
+// the NaN Median returns, for figures that are zero when nothing was measured.
 func medianOrZero(xs []float64) float64 {
 	if len(xs) == 0 {
 		return 0

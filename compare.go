@@ -6,6 +6,8 @@ import (
 	"runtime/metrics"
 	"strings"
 	"time"
+
+	"github.com/TomTonic/rtcompare/prng"
 )
 
 // AutocorrelationThreshold is the lag-1 autocorrelation above which [Compare]
@@ -112,9 +114,10 @@ type Report struct {
 	// read [Combine]'s pooled interval instead; see the multiproc package.
 	Estimate Estimate
 
-	// Confidence maps each requested threshold to the confidence that it is
-	// met. It is nil when CompareOptions.Thresholds was empty.
-	Confidence map[float64]float64
+	// Confidence holds, for each requested threshold in ascending order, the
+	// confidence that it is met. It is nil when CompareOptions.Thresholds was
+	// empty.
+	Confidence Confidences
 
 	// Validated records whether the A/A experiments were performed. When false,
 	// NoiseFloor is zero because it is unknown, not because it is small.
@@ -211,23 +214,10 @@ func (r Report) String() string {
 	for _, w := range r.Warnings {
 		fmt.Fprintf(&b, "  warning: %s\n", w)
 	}
-	for _, t := range sortedKeys(r.Confidence) {
-		fmt.Fprintf(&b, "  confidence that A beats B by %.2f%%: %.1f%%\n", t*100, r.Confidence[t]*100)
+	for _, c := range r.Confidence {
+		fmt.Fprintf(&b, "  confidence that A beats B by %.2f%%: %.1f%%\n", c.Threshold*100, c.Confidence*100)
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-// sortedKeys returns the map's keys in ascending order, so that a report reads
-// the same way every time it is printed.
-func sortedKeys(m map[float64]float64) []float64 {
-	if len(m) == 0 {
-		return nil
-	}
-	keys := make([]float64, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return dedupeSortedCopy(keys)
 }
 
 // Compare measures two candidates and answers, in one call, whether one is
@@ -415,7 +405,7 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 // randomSeed draws a non-zero seed from cryptographic randomness, for a
 // comparison that was given none, so that the one it used can be recorded.
 func randomSeed() uint64 {
-	return NewCPRNG(8).Uint64() | 1
+	return prng.NewCPRNG(8).Uint64() | 1
 }
 
 // suspendedSince returns how much further the wall clock has moved than the
