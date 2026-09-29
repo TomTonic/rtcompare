@@ -17,6 +17,10 @@ type RTcomparisonResult struct {
 	Confidence float64
 }
 
+// MinimumDataPoints is the fewest measurements per candidate that
+// [CompareSamples], [EstimateDifference] and [Collect] accept. Below it a
+// median has too few values to resample from for the bootstrap to say
+// anything.
 const MinimumDataPoints uint64 = 11
 
 // DefaultResamples is a sensible package-level default for bootstrap resamples.
@@ -202,7 +206,7 @@ func uniqueSortedThresholds(gains []float64) []float64 {
 	return dedupeSortedCopy(gains)
 }
 
-// CompareRuntimesDefault calls CompareRuntimes using `DefaultResamples`.
+// CompareSamplesDefault calls [CompareSamples] with [DefaultResamples].
 // This convenience wrapper avoids repeating the numeric literal in callers
 // and documents the recommended default in the public API.
 func CompareSamplesDefault(measurementsA, measurementsB []float64, relativeGains []float64) (result []RTcomparisonResult, err error) {

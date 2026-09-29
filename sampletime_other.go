@@ -23,7 +23,7 @@ func SampleTime() TimeStamp {
 	*/
 }
 
-// Retruns the difference between two timestams in nanoseconds with the highest possible precision (which might be more than just one nanosecond).
+// DiffTimeStamps returns the difference between two timestamps in nanoseconds with the highest possible precision (which might be more than just one nanosecond).
 // The function assumes that t_later is later than t_earlier and will return a negative value if this is not the case.
 // Please note that the call to this function does NOT have constant runtime on other systems but Windows.
 func DiffTimeStamps(t_earlier, t_later TimeStamp) int64 {

@@ -5,10 +5,11 @@ become one. It explains what to actually do, in what order, and — this is the
 part most guides skip — **what to do when something looks wrong**, because
 something looking wrong is usually the measurement telling you something true.
 
-If you just want the short version: call [`Compare`](#the-five-minute-version)
-and read what it prints. This document exists for two reasons: to explain what
-that one call is doing on your behalf, and to walk through doing it by hand for
-the cases where you need more control than `Compare` gives you.
+If you just want the short version: pick the call from
+[Which call do I need?](#which-call-do-i-need), and read what it prints. This
+document exists for two reasons: to explain what that one call is doing on
+your behalf, and to walk through doing it by hand for the cases where you need
+more control than it gives you.
 
 ## What question this actually answers
 
@@ -38,9 +39,29 @@ The price of doing this honestly is that the answer is never a bare number. It
 is always a number plus a statement of how much to trust it — and sometimes
 the honest answer is "I can't tell, and here is why."
 
+## Which call do I need?
+
+| What you compare | Call |
+|---|---|
+| Two functions or code paths whose data fits in the CPU caches | `rtcompare.Compare` |
+| Data structures under insertions and deletions | `workload.Compare`, see [Benchmarking insertions and deletions](#benchmarking-insertions-and-deletions) |
+| Anything whose data is larger than the caches, or full of pointers (trees, linked structures, maps of heap objects) | `multiproc.Main` or `multiproc.RunTest`, see [One process is one observation](#one-process-is-one-observation) |
+| Data structures under insertions and deletions, larger than the caches | `workload.Suite` with `multiproc.MainSuite` or `multiproc.RunTestSuite` |
+
+"Fits in the caches" means, as a rule of thumb, well below 16 MB of live data
+for both candidates together; `Compare` warns above that. Why the size decides:
+for large or pointer-heavy data, *where* the data happens to lie in memory
+moves the result by several points, and that placement is fixed for the life
+of a process and different in the next one. A single run then reports a narrow
+interval around a number the next run does not confirm. The `multiproc`
+package runs the comparison in several processes and pools them.
+
+If in doubt, start with `Compare`: if your data is too large for it, its
+warnings say so.
+
 ## The five-minute version
 
-For almost everyone, this is the whole document:
+If your data fits in the caches, this is the whole document:
 
 ```go
 report, err := rtcompare.Compare(candidateA, candidateB, rtcompare.CompareOptions{
@@ -404,11 +425,11 @@ reports a tighter, more certain answer than the data actually supports.
 The fix, when this correlation is strong enough to matter (above roughly
 0.2), is to resample in contiguous *blocks* of measurements instead of one at
 a time, which keeps nearby measurements together and preserves the
-dependence between them rather than pretending it isn't there. `Compare` (and
-`ValidateHarness`, if you're doing this by hand) checks this and switches to
+dependence between them rather than pretending it isn't there. `Compare` checks this and switches to
 `BlockBootstrapConfidence` automatically when it's warranted; below that
 threshold, blocks cost you nothing but don't help either, so the plain
-version is used.
+version is used. `ValidateHarness` only reports the autocorrelation it saw, so
+if you're doing this by hand, make the switch yourself.
 
 **You never need to compute this by hand.** It's here so that when a `Report`
 says "resampled in blocks of 5," you know why, and so you understand why the
@@ -475,8 +496,13 @@ hiccup that would look completely different on a re-run).
 If you get `Resolved == false` and want a real answer, in rough order of what
 to try first:
 
-1. **Run it again.** If it was a one-off noisy run, a second run often clears
-   things up on its own.
+1. **Do not simply run it again until it resolves.** Each run has some chance
+   of resolving by luck, so repeating until one does is a reliable way to
+   manufacture a difference that is not there. Repeat a run to check that a
+   result *reproduces*, and count every run, not the one you liked. If you
+   need more evidence, collect it on purpose: run the comparison in several
+   processes and pool them with `multiproc`, which also covers the
+   process-to-process scatter a single run cannot see.
 2. **Make the batches longer.** See
    [The measurement seems too coarse](#the-tie-rate-is-high) below — a coarser
    measurement has a higher noise floor, so a real but small difference can
@@ -822,9 +848,9 @@ the same causes as a high noise floor (something intermittently loading the
 machine), just showing up as a pattern between neighbors rather than as pure
 scatter.
 
-**What to do:** nothing, usually — `Compare` (and `ValidateHarness`) detects
-this and switches to block resampling automatically, which repairs most of
-the resulting overconfidence. If you're calling `BootstrapConfidence`
+**What to do:** nothing, usually — `Compare` detects this and switches to
+block resampling automatically, which repairs most of the resulting
+overconfidence. If you're calling `BootstrapConfidence`
 directly rather than through `Compare`, switch to
 `BlockBootstrapConfidence` yourself once this crosses roughly 0.2. If the
 value is very high (0.4 and up), block resampling only partly repairs the
