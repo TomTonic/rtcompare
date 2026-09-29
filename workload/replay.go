@@ -45,10 +45,14 @@ func (c *Cursor) Position() int { return c.pos }
 //	cur := &workload.Cursor{}
 //	candidate := rtcompare.Candidate{Name: "map", Batch: cur.Batch(ops, func(run []workload.Op) {
 //		for _, op := range run {
-//			if op.Kind == workload.Insert {
+//			switch op.Kind {
+//			case workload.Insert:
 //				m[op.Key] = struct{}{}
-//			} else {
+//			case workload.Delete:
 //				delete(m, op.Key)
+//			default: // Lookup and LookupMiss, if Config asks for lookups
+//				_, found := m[op.Key]
+//				hits += found
 //			}
 //		}
 //	})}
@@ -96,7 +100,8 @@ func (c *Cursor) Settle(ops []Op, apply func([]Op)) {
 
 // Check replays ops against a model set that starts as start, and reports the
 // first operation that would be invalid: an insertion of a present element, a
-// deletion of an absent one, or an unknown Kind. It also reports whether the
+// deletion of an absent one, a Lookup of an absent one, a LookupMiss of a
+// present one, or an unknown Kind. It also reports whether the
 // model ends as end, ignoring order. It returns nil if the stream is valid.
 //
 // Use it in a test of anything that produces or transforms a stream. For a
@@ -129,6 +134,11 @@ func Check(ops []Op, start, end []uint32) error {
 			return fmt.Errorf("workload: op %d deletes element %d, which is not present", i, op.ID)
 		case op.Kind == Delete:
 			delete(present, op.ID)
+		case op.Kind == Lookup && !has:
+			return fmt.Errorf("workload: op %d looks up element %d as present, which it is not", i, op.ID)
+		case op.Kind == LookupMiss && has:
+			return fmt.Errorf("workload: op %d looks up element %d as absent, which it is not", i, op.ID)
+		case op.Kind == Lookup, op.Kind == LookupMiss:
 		default:
 			return fmt.Errorf("workload: op %d has unknown %s", i, op.Kind)
 		}

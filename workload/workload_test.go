@@ -242,6 +242,9 @@ func TestCheckRejectsInvalidStreams(t *testing.T) {
 		{"rejects a missing element at the end", nil, []uint32{1}, []uint32{1, 2}, "element 2 should be present"},
 		{"rejects an extra element at the end", []Op{{ID: 4, Kind: Insert}}, nil, nil, "first being 4"},
 		{"rejects a duplicate start element", nil, []uint32{1, 1}, nil, "twice"},
+		{"accepts lookups that hit and miss as marked", []Op{{ID: 1, Kind: Lookup}, {ID: 9, Kind: LookupMiss}}, []uint32{1}, []uint32{1}, ""},
+		{"rejects a lookup of an absent element", []Op{{ID: 2, Kind: Lookup}}, []uint32{1}, []uint32{1}, "op 0 looks up element 2 as present"},
+		{"rejects a missing lookup of a present element", []Op{{ID: 1, Kind: LookupMiss}}, []uint32{1}, []uint32{1}, "op 0 looks up element 1 as absent"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -461,5 +464,108 @@ func TestKeysDependOnTheSeed(t *testing.T) {
 	}
 	if _, err := Build(10, Config{Keys: KeyOrder(5)}); err == nil || !strings.Contains(err.Error(), "KeyOrder") {
 		t.Errorf("got %v, want an error about the unknown KeyOrder", err)
+	}
+}
+
+// TestChurnAndLookupsKeepStreamsValid checks the two optional parts of a
+// realistic workload: deletions that also reach the long-lived elements, and
+// lookups mixed into the mutations. With both switched on, every stream still
+// has to be valid, a cycle still has to end where it began, about the asked
+// share of deletions has to hit permanent elements, and the lookups have to
+// come at the asked rate, with the asked share of misses.
+func TestChurnAndLookupsKeepStreamsValid(t *testing.T) {
+	const target = 4000
+	cfg := Config{Seed: 3, PermanentChurn: 0.2, Lookups: 1, MissRate: 0.25}
+	atRest := make([]uint32, target)
+	for i := range atRest {
+		atRest[i] = uint32(i)
+	}
+	for _, c := range []struct {
+		name  string
+		make  func(int, Config) ([]Op, error)
+		start []uint32
+	}{
+		{"keeps a cycle valid and closed", Cycle, atRest},
+		{"keeps a build valid", Build, nil},
+	} {
+		for _, victims := range []Policy{Uniform, FIFO, LIFO} {
+			t.Run(fmt.Sprintf("%s with %s victims", c.name, victims), func(t *testing.T) {
+				cfg := cfg
+				cfg.Victims = victims
+				ops, err := c.make(target, cfg)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if err := Check(ops, c.start, atRest); err != nil {
+					t.Fatalf("invalid stream: %v", err)
+				}
+				var mutations, deletions, permanentDeletions, lookups, misses int
+				for _, op := range ops {
+					switch op.Kind {
+					case Insert:
+						mutations++
+					case Delete:
+						mutations++
+						deletions++
+						if op.ID < target {
+							permanentDeletions++
+						}
+					case Lookup:
+						lookups++
+					case LookupMiss:
+						lookups++
+						misses++
+					}
+				}
+				if share := float64(permanentDeletions) / float64(deletions); share < 0.12 || share > 0.22 {
+					t.Errorf("%.1f%% of deletions hit permanent elements, want about 20%%", share*100)
+				}
+				if lookups < mutations-1 || lookups > mutations {
+					t.Errorf("%d lookups for %d mutations, want one each", lookups, mutations)
+				}
+				if share := float64(misses) / float64(lookups); math.Abs(share-0.25) > 0.03 {
+					t.Errorf("%.1f%% of lookups missed, want about 25%%", share*100)
+				}
+			})
+		}
+	}
+}
+
+// TestStreamsLeaveOptionalPartsOffByDefault checks that an Apply function
+// written for insertions and deletions only keeps working: by default a
+// stream has no lookups and never deletes a permanent element from a cycle.
+func TestStreamsLeaveOptionalPartsOffByDefault(t *testing.T) {
+	ops, err := Cycle(2000, Config{Seed: 4})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i, op := range ops {
+		if op.Kind != Insert && op.Kind != Delete {
+			t.Fatalf("op %d is a %s", i, op.Kind)
+		}
+		if op.ID < 2000 {
+			t.Fatalf("op %d touches permanent element %d", i, op.ID)
+		}
+	}
+}
+
+// TestChurnAndLookupsRejectBadSettings checks that settings with no sensible
+// reading are refused rather than quietly clamped.
+func TestChurnAndLookupsRejectBadSettings(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"returns error for churn of one", Config{PermanentChurn: 1}},
+		{"returns error for negative churn", Config{PermanentChurn: -0.1}},
+		{"returns error for negative lookups", Config{Lookups: -1}},
+		{"returns error for infinite lookups", Config{Lookups: math.Inf(1)}},
+		{"returns error for a miss rate above one", Config{Lookups: 1, MissRate: 1.5}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := Cycle(100, c.cfg); err == nil {
+				t.Error("expected an error")
+			}
+		})
 	}
 }

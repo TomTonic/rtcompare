@@ -21,7 +21,9 @@ type Structure[S any] struct {
 
 	// Apply performs the operations of run on s, in order. Keep the loop over
 	// run in this function, where the compiler can inline the structure's
-	// methods.
+	// methods. With Config.Lookups set, run also holds Lookup and LookupMiss
+	// operations, so switch over all four kinds rather than treating
+	// everything but an insertion as a deletion.
 	Apply func(s S, run []Op)
 }
 
