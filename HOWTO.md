@@ -972,7 +972,9 @@ package-level sink variable.
   code. It is fixed for the life of a process and changes with the next one;
   see [One process is one observation](#one-process-is-one-observation).
 - **Difference and ratio** — rtcompare's difference is 1 − A/B: how much
-  less time A needs, as a share of B's time. It is not symmetric: if B takes
+  less time A needs, as a share of B's time. `Compare` takes it from the
+  batches of A and B measured next to each other, as the median of their
+  ratios, so that whatever disturbed both batches of a pair cancels out. It is not symmetric: if B takes
   twice as long as A, the difference is +50%, but with the roles swapped it
   is −100%. The report therefore also prints the ratio B/A (2.000× in that
   example, 0.500× swapped), which reads the same either way round.

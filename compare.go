@@ -122,7 +122,8 @@ type Report struct {
 	// taken, for anyone who wants to do their own analysis.
 	SamplesA, SamplesB []float64
 
-	// Estimate is how much smaller A is than B, with an interval around it.
+	// Estimate is how much smaller A is than B, with an interval around it,
+	// from the ratios of the pairs of batches measured next to each other.
 	// Positive means A is faster.
 	//
 	// The interval covers the noise within this one process and nothing else.
@@ -161,7 +162,7 @@ type Report struct {
 	// Seed is the seed the resampling was drawn from, CompareOptions.Seed or
 	// the random one drawn in its place. With SamplesA, SamplesB and
 	// BlockLength it reproduces Estimate through [EstimateDifference] and
-	// Confidence through [BlockBootstrapConfidence] exactly.
+	// Confidence through [ConfidencesFor] exactly, both with Paired set.
 	Seed uint64
 
 	// DriftA and DriftB test each series for a trend across the run. A zero N
@@ -290,7 +291,9 @@ func (r Report) String() string {
 //  5. Resample in blocks if the measurements turned out to be correlated with
 //     their neighbours, and as single observations if they did not.
 //  6. Report the difference, an interval around it, and whether it clears both
-//     zero and the noise floor.
+//     zero and the noise floor. The difference is taken from the ratios of the
+//     pairs of batches measured next to each other, so that a disturbance that
+//     hit both members of a pair cancels; see EstimateOptions.Paired.
 //
 // Both candidates are validated, not just one, because they need not be equally
 // well behaved and the comparison is only as trustworthy as the worse of them.
@@ -455,16 +458,22 @@ func CompareContext(ctx context.Context, a, b Candidate, opt CompareOptions) (Re
 	}
 
 	progress(StageResampling, 0, 1)
-	est, err := EstimateDifference(sa, sb, EstimateOptions{Level: opt.Level, Resamples: opt.Resamples, BlockLength: r.BlockLength, Seed: opt.Seed})
+	// Paired, because Collect measured A and B in pairs, next to each other,
+	// and a disturbance that hit both cancels in their ratio; see
+	// EstimateOptions.Paired.
+	eo := EstimateOptions{Level: opt.Level, Resamples: opt.Resamples, BlockLength: r.BlockLength, Seed: opt.Seed, Paired: true}
+	est, err := EstimateDifference(sa, sb, eo)
 	if err != nil {
 		return Report{}, err
 	}
 	r.Estimate = est
 
-	// The same seed and block length as the interval, so that each confidence
-	// is the share of the very replicates the interval was read from.
+	// The same options as the interval, so that each confidence is the share
+	// of the very replicates the interval was read from.
 	if len(opt.Thresholds) > 0 {
-		r.Confidence = bootstrapConfidence(sa, sb, opt.Thresholds, opt.Resamples, r.BlockLength, opt.Seed)
+		if r.Confidence, err = ConfidencesFor(sa, sb, opt.Thresholds, eo); err != nil {
+			return Report{}, err
+		}
 	}
 
 	// Both bars have to be cleared: the difference must be distinguishable from

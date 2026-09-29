@@ -498,16 +498,27 @@ func TestValidationBootstrapsFollowTheirSeed(t *testing.T) {
 		r := newAARuns(opt, stream)
 		for range 3 {
 			r.deltas = append(r.deltas, 0)
-			ab, ba := r.seeds()
-			for _, s := range []uint64{ab, ba} {
-				if s == 0 || seen[s] {
-					t.Fatalf("seed %d repeats or is zero", s)
-				}
+			if s := r.seed(); s == 0 || seen[s] {
+				t.Fatalf("seed %d repeats or is zero", s)
+			} else {
 				seen[s] = true
 			}
 		}
 	}
-	if ab, ba := newAARuns(ValidationOptions{}, 0).seeds(); ab != 0 || ba != 0 {
-		t.Errorf("an unseeded validation should draw from cryptographic randomness, got seeds %d and %d", ab, ba)
+	if s := newAARuns(ValidationOptions{}, 0).seed(); s != 0 {
+		t.Errorf("an unseeded validation should draw from cryptographic randomness, got seed %d", s)
+	}
+}
+
+// TestAARunSplitsTies checks how a validation reads a run of identical
+// measurements: every pair ties, so every replicate's difference is exactly
+// zero, the tie rate is one, and the confidence splits the ties to exactly
+// one half rather than counting them for A.
+func TestAARunSplitsTies(t *testing.T) {
+	a := []float64{10, 11, 12, 10.5, 11.5, 12.5, 10.2, 11.2, 12.2, 10.7, 11.7}
+	r := newAARuns(ValidationOptions{Resamples: 300, Level: 0.95, Seed: 1}, 0)
+	r.add(a, slices.Clone(a))
+	if r.deltas[0] != 0 || r.tieRates[0] != 1 || r.confidences[0] != 0.5 {
+		t.Errorf("delta %v, tie rate %v, confidence %v; want 0, 1, 0.5", r.deltas[0], r.tieRates[0], r.confidences[0])
 	}
 }

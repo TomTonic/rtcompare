@@ -642,12 +642,15 @@ func TestCompareIsReproducibleFromItsSeed(t *testing.T) {
 	if r.Seed == 0 {
 		t.Fatal("Compare did not record the seed it drew")
 	}
-	e, err := EstimateDifference(r.SamplesA, r.SamplesB, EstimateOptions{
-		Level: r.Estimate.Level, Resamples: r.Estimate.Resamples, BlockLength: r.BlockLength, Seed: r.Seed})
+	eo := EstimateOptions{Level: r.Estimate.Level, Resamples: r.Estimate.Resamples, BlockLength: r.BlockLength, Seed: r.Seed, Paired: true}
+	e, err := EstimateDifference(r.SamplesA, r.SamplesB, eo)
 	if err != nil || e != r.Estimate {
 		t.Errorf("recomputed estimate %+v (%v), want %+v", e, err, r.Estimate)
 	}
-	c := BlockBootstrapConfidence(r.SamplesA, r.SamplesB, opt.Thresholds, r.Estimate.Resamples, r.BlockLength, r.Seed)
+	c, err := ConfidencesFor(r.SamplesA, r.SamplesB, opt.Thresholds, eo)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	for _, th := range opt.Thresholds {
 		if confAt(c, th) != confAt(r.Confidence, th) {
 			t.Errorf("recomputed confidence at %v: %v, want %v", th, confAt(c, th), confAt(r.Confidence, th))

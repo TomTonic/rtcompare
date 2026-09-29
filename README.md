@@ -124,6 +124,8 @@ Not sure what a warning like "resampled in blocks" or "does not clear the noise 
 
 - **Batching is what beats the clock.** A single batch measurement is off by at most one clock tick `p`. Spread over `n` operations that is `p/n` per operation, so the relative error is `p/(n·c)` where `c` is one operation's cost. Since `n·c` is just the batch duration `T`, the whole thing collapses to `p/T`: the error depends only on how long a batch runs, not on how fast the operation is. `CalibrateInnerLoops` therefore searches for the smallest batch that reaches a target duration, which is why an expensive operation can calibrate to a batch of two while a cheap one needs thirteen thousand.
 
+- **Pairs, not two separate bags.** `Collect` measures A and B in pairs, next to each other. `Compare` takes the difference from the ratio of each pair, 1 − median(Aᵢ/Bᵢ), and resamples whole pairs, so that a disturbance that hits both members of a pair, such as the clock speed changing, cancels instead of widening the interval. On memory-bound candidates that made the intervals 25–38% narrower; with disturbances common to both members, simulated, the unpaired interval covered at 99–100% for a nominal 95% at up to five times the width, while the paired one held 94–95%.
+
 - **Bootstrap-based inference.** Rather than a single mean, rtcompare resamples the collected measurements. `CompareSamples` answers "how confident can I be that A beats B by at least x", which is what you want when a threshold is given. `EstimateDifference` answers "how large is the difference and how precisely is that known", which is what you want when none is. Its interval is a percentile bootstrap, measured to cover at 96–97% against a nominal 95%: conservative rather than optimistic, and well centred.
 
 - **Why the median.** Each replicate is summarised by its median. Interference is one-sided, which argues for a low quantile instead, but simulation against a known difference says otherwise: below roughly 30% disturbed batches the median wins on RMSE, because with contamination on fewer than half the samples the middle one is already drawn from the clean part. Past 40% the median degrades sharply — and so does the noise floor `ValidateHarness` reports, from 1.2% to 20.5%, so that regime announces itself.
@@ -163,7 +165,8 @@ Judging:
 
 - `CompareSamples(a, b, relativeGains, resamples)` — confidence per requested relative speedup, as `Confidences`, a list sorted by threshold whose `At(threshold)` looks one up. Zero resamples select `DefaultResamples`.
 - `EstimateDifference(a, b, EstimateOptions)` — the point estimate of the relative difference with a bootstrap interval around it, and with a `Seed` reproducibly. `Excludes(0)` asks whether a difference has been established at all, and `Ratio()` gives the factor B/A.
-- `BootstrapConfidence` — the confidences of `CompareSamples`, with control over the PRNG seed.
+- `ConfidencesFor(a, b, thresholds, EstimateOptions)` — the confidences drawn from exactly the replicates `EstimateDifference` reads its interval from; with `Paired` for measurements taken in pairs, as `Report`'s are.
+- `BootstrapConfidence` — the confidences of `CompareSamples`, for unpaired measurements, with control over the PRNG seed.
 - `BlockBootstrapConfidence` — resamples contiguous blocks, for measurements correlated with their neighbours.
 - `F2T(timesFaster)` — converts a multiplicative speedup to the relative threshold the API uses. It signals invalid input by returning NaN, which `CompareSamples` rejects with an error rather than silently answering.
 
