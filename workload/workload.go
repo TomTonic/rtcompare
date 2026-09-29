@@ -32,8 +32,12 @@
 //
 // [Compare] does all of this in one call and answers the two questions a
 // mutation benchmark has, what an operation costs in steady state and what a
-// build costs, separately. [Cycle], [Build], [Replay], [Cursor] and [Check]
-// are the parts it is made of, for setups it does not cover.
+// build costs, separately. For structures of more than a few megabytes, or
+// full of pointers, one process is one observation of where their memory
+// happened to lie, and [Suite] runs Compare in several processes through the
+// multiproc package and pools both answers. [Cycle], [Build], [Replay],
+// [Cursor] and [Check] are the parts they are made of, for setups they do not
+// cover.
 //
 // Every operation names its element twice: by an ID, which says which element
 // it is, and by a Key, which is what to insert into or delete from the

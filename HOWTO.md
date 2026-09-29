@@ -225,6 +225,24 @@ default 2), burst length, and `Victims`, which chooses what a deletion removes:
 `Uniform` (the default, like a general-purpose map), `FIFO` (a queue or a
 retention window), or `LIFO` (a stack or undo log).
 
+Both answers describe one run of your program. For structures of more than a
+few megabytes, or full of pointers, that is one observation of where their
+memory happened to lie, see
+[One process is one observation](#one-process-is-one-observation). Run the
+comparison in several processes instead, which takes one line:
+
+```go
+func main() {
+    multiproc.MainSuite(multiproc.Options{},
+        workload.Suite("map vs other", 1_000_000, goMap, otherSet, workload.Options{}))
+}
+```
+
+Each process runs `workload.Compare` once, with the structure built second
+alternating between processes, and both answers come back pooled, as
+`map vs other/steady state` and `map vs other/build`. In a test,
+`multiproc.RunTestSuite(t, ...)` does the same.
+
 For setups `Compare` does not cover, the parts are available on their own:
 `workload.Cycle` and `workload.Build` make the streams, `workload.Replay`
 replays a cycle on one structure (including the untimed first pass and
@@ -594,7 +612,12 @@ func main() {
 ```
 
 In a test, `multiproc.RunTest(t, multiproc.Options{}, pair)` does the same and
-returns the pooled results for your assertions.
+returns the pooled results for your assertions. For data structures under
+insertions and deletions, `workload.Suite` fits in the same place, through
+`multiproc.MainSuite` or `multiproc.RunTestSuite`; see
+[Benchmarking insertions and deletions](#benchmarking-insertions-and-deletions).
+`multiproc.Suites` combines several suites, pairs included through
+`multiproc.Pairs`, into one run of processes.
 
 What happens behind that call, so that you don't have to remember any of it:
 
