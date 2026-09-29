@@ -594,8 +594,10 @@ returns the pooled results for your assertions.
 
 What happens behind that call, so that you don't have to remember any of it:
 
-- **Your program is started again as child processes**, one after another, so
-  they don't disturb each other. In a test, the children run only that test.
+- **Your program is started again as child processes**, by default one after
+  another, so they don't disturb each other (see
+  [Serial or parallel](#serial-or-parallel) for the alternative). In a test,
+  the children run only that test.
 - **Each child gets a different heap layout.** Before anything is built, it
   fills the heap with a seeded amount of filler, so that your data lands at
   different addresses in each process (`rtcompare.PerturbHeap`). Otherwise
@@ -609,14 +611,50 @@ What happens behind that call, so that you don't have to remember any of it:
   everything the measurement depends on inside them.
 - **It stops when the answer is precise enough.** At least 5 processes, then
   more until every comparison's pooled interval is within ±2 percentage
-  points, or within ±10% of the difference itself, and at most 20. It only
-  stops after an even number, so both build orders count equally. In the
-  measurements behind issue #109, five were enough for data in the cache and
-  13 to 15 were needed for data far out of it.
+  points, or within ±10% of the difference itself, and at most 40. It only
+  stops after an even number, so both build orders count equally. Five were
+  enough for data in the cache; far out of it, runs have needed 13 to 40, and
+  where processes scattered by 10 points the rule would have needed over 100.
 
 Keep the machine awake while this runs: a laptop that goes to sleep pauses the
 measurement for as long as it sleeps. rtcompare notices that
 (`Report.Suspended`) but cannot give you the time back.
+
+### Serial or parallel
+
+Far out of cache, 40 processes may still not be enough, and a process of a
+realistic suite can take a minute or two, so running more of them one after
+another quickly stops being practical. `Options.Parallel` runs several at the
+same time, in waves:
+
+```go
+multiproc.Main(multiproc.Options{Parallel: 12}, pair) // 12 children at a time
+```
+
+Why that is worth it: the uncertainty of the pooled result is roughly
+σ²_between/P + σ²_within/(P·R), with P processes of R samples each. Out of
+cache the scatter between processes dominates by far, so only more processes
+help, and running them at the same time buys P per hour many times over. The
+default budget of a parallel run is 10 waves, 120 processes at
+`Parallel: 12`, for about the time of 10 serial processes.
+
+But it measures something else. The children share the last-level cache, the
+memory bandwidth and the clock headroom, so each gets a fraction of the cache
+it would have alone, and data falls out of cache at smaller sizes. That is
+closer to a program with neighbours in production, and A and B are still
+compared fairly, since both run interleaved within each process. It is not
+the same as the serial result, though:
+
+- **Never mix the two regimes** in one pooled result or one comparison.
+  `Results.Parallel` says which one ran; state it in your reports.
+- **Stay at or below the number of physical cores.** Two children on the two
+  hardware threads (SMT/Hyper-Threading) of one core share its L1 and L2 cache
+  and disturb each other far more than neighbours on other cores do.
+- Each child gets `GOMAXPROCS` = the number of CPUs divided by `Parallel`
+  (at least 2), unless you set `GOMAXPROCS` yourself, so that one child's
+  garbage collector cannot steal cores from its neighbours.
+- The children's output is written line by line with a `[p07] ` prefix, so
+  that concurrent children don't garble each other's lines.
 
 For anything the pairs don't cover, `multiproc.Run` takes a suite function of
 your own, and still perturbs the heap and pools for you; alternate the build

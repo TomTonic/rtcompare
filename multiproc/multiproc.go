@@ -10,7 +10,7 @@
 // one observation.
 //
 // Everything that takes is done here, so that none of it has to be remembered:
-// the program is started again as child processes, one at a time; each child
+// the program is started again as child processes; each child
 // perturbs its heap from its own seed before anything is built; the two
 // candidates' data is built in an order that alternates between processes,
 // since whichever is built second can be consistently a few percent faster;
@@ -29,9 +29,37 @@
 //
 // In a test, [RunTest] does the same and returns the results for assertions.
 // [Run] takes an arbitrary suite for anything the pairs do not cover.
+//
+// # Two regimes
+//
+// By default the children run one after another, each with the machine to
+// itself. That is the serial regime, and it answers how the candidates compare
+// on an otherwise idle machine. Options.Parallel runs several children at the
+// same time instead, in waves. That is a different regime, not just a faster
+// one: the children share the last-level cache, the memory bandwidth and the
+// clock headroom, much as a program shares them with its neighbours in
+// production. Where the data is out of cache, the parallel regime is usually
+// the only way to precision in reasonable time, because the variance of the
+// pooled estimate is roughly
+//
+//	σ²_between/P + σ²_within/(P·R)
+//
+// for P processes of R samples, and out of cache the first term dominates by
+// far: precision improves almost only with P, and running children at the
+// same time multiplies P per hour by the number of parallel slots. Where the
+// question is how a structure performs with the whole cache to itself, or
+// where a result must stand next to earlier serial ones, stay serial.
+//
+// The two regimes' results are not interchangeable: all-core load lowers the
+// clock and shrinks each process's share of the cache, which moves the point
+// where accesses go to memory to smaller data. Never pool or compare them with
+// each other. Results.Parallel records which one ran, and reports should state
+// it. Within a process, A and B still run interleaved in both regimes, so
+// neighbouring processes widen the noise but do not favour either candidate.
 package multiproc
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -40,7 +68,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -56,13 +83,23 @@ const (
 	envIndex = "RTCOMPARE_MULTIPROC_INDEX"
 )
 
-// Defaults for [Options], taken from a downstream suite that pooled 46
-// comparisons this way. Five processes were enough while the data fit in the
-// caches; out of cache the stop rule needed 13 to 15 before every interval was
-// within two points.
+// Defaults for [Options], taken from downstream suites that pooled hundreds
+// of comparisons this way.
+//
+// Five processes were enough while the data fit in the caches. Out of cache
+// the first suite needed 13 to 15 before every interval was within two
+// points, which set the old serial budget of 20; later runs needed 20 to 40,
+// and where processes scattered by 9 to 12 points the stop rule would have
+// needed 70 to 130 (issue #115). DefaultMaxProcesses of 40 keeps a serial run
+// bounded while covering a scatter of about 6 points. A parallel run is
+// budgeted in waves instead: DefaultMaxWaves of 10 costs about the wall time
+// of 10 serial processes, since a wave takes about as long as one process,
+// and at Parallel 12 allows 120 processes, enough for a scatter of 10 points
+// and more.
 const (
 	DefaultMinProcesses = 5
-	DefaultMaxProcesses = 20
+	DefaultMaxProcesses = 40
+	DefaultMaxWaves     = 10
 	DefaultRotation     = 2
 	DefaultAbsPrecision = 0.02
 	DefaultRelPrecision = 0.10
@@ -77,8 +114,34 @@ type Options struct {
 	MinProcesses int
 
 	// MaxProcesses bounds the number of processes. Zero selects
-	// [DefaultMaxProcesses]. Must not be below MinProcesses.
+	// [DefaultMaxProcesses] for a serial run and [DefaultMaxWaves] waves for a
+	// parallel one. In a parallel run an explicit value is rounded up to a
+	// whole wave, and so is MinProcesses, since a wave runs in full anyway.
+	// Must not be below MinProcesses.
 	MaxProcesses int
+
+	// Parallel is the number of child processes that run at the same time.
+	// Zero or 1 selects the serial regime, one process after another. Above 1,
+	// processes are started in waves of Parallel, rounded up to a whole
+	// Rotation so that every build order is represented equally in each wave,
+	// and the stop rule is consulted after each complete wave.
+	//
+	// Parallel runs measure a loaded machine: the children share caches,
+	// memory bandwidth and clock headroom, much as a program in production
+	// shares them with its neighbours. That is a legitimate regime, and for
+	// data out of cache usually the faster way to precision, but it is a
+	// different one: all-core load lowers the clock and shrinks each process's
+	// share of the last-level cache, so its results must not be pooled or
+	// compared with a serial run's; Results.Parallel records which one ran.
+	// Keep it at or below the number of physical cores. Two children on the
+	// SMT siblings of one core share its L1 and L2 caches and disturb each
+	// other far more than neighbours on other cores do.
+	//
+	// Unless the environment already sets GOMAXPROCS, each child of a parallel
+	// run gets GOMAXPROCS = max(2, NumCPU/Parallel), so that one child's
+	// garbage collector cannot take cores from its neighbours in the middle of
+	// their measurements.
+	Parallel int
 
 	// Rotation is the number of build orders the suite cycles through by
 	// Process.Index, such as 2 for building A's data last in even processes and
@@ -116,11 +179,15 @@ type Options struct {
 	Args []string
 
 	// Stdout and Stderr receive the children's output. Nil discards stdout and
-	// passes stderr through to the parent's.
+	// passes stderr through to the parent's. In a parallel run the children's
+	// output is written in whole lines, each prefixed with its process index
+	// such as "[p07] ", so that concurrent children do not interleave within
+	// a line.
 	Stdout, Stderr io.Writer
 
-	// Progress, when set, is called after each process with the results so
-	// far, for example to print a line per process.
+	// Progress, when set, is called with the results so far after each
+	// process of a serial run and after each complete wave of a parallel one,
+	// for example to print a line per call.
 	Progress func(Results)
 }
 
@@ -188,12 +255,24 @@ type Results struct {
 	// stopped at MaxProcesses with at least one interval still wider than
 	// requested.
 	Precise bool
+
+	// Parallel is the number of processes that ran at the same time, 1 for a
+	// serial run, so that a report can say which regime it measured. Results
+	// from the two regimes are not interchangeable; see Options.Parallel.
+	Parallel int
+
+	// ChildGOMAXPROCS is the GOMAXPROCS the children's environment set, zero
+	// when it set none and the children used the Go runtime's default.
+	ChildGOMAXPROCS int
 }
 
 // String renders the pooled results, one block per comparison.
 func (r Results) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d processes", r.Processes)
+	if r.Parallel > 1 {
+		fmt.Fprintf(&b, ", %d at a time (GOMAXPROCS %d each)", r.Parallel, r.ChildGOMAXPROCS)
+	}
 	if !r.Precise {
 		b.WriteString(", stopped before every interval was as precise as requested")
 	}
@@ -221,10 +300,15 @@ func (r Results) String() string {
 // Run behaves differently depending on where it is called. In the parent, the
 // program as started by the user, it never calls suite: it starts the current
 // binary again as a child, with the same arguments unless Options.Args says
-// otherwise, waits for it, and repeats, one process at a time so that they do
-// not disturb each other. Once MinProcesses have run it stops as soon as every
-// comparison's pooled interval meets the precision in Options at the end of a
-// whole Rotation, and in any case after MaxProcesses. It returns the pooled
+// otherwise, waits for it, and repeats: one process at a time, or in waves of
+// Options.Parallel processes at a time (see the package documentation for the
+// two regimes). Process i always gets index i and the same seed, whichever
+// child finishes first, and results are pooled in index order, so a run is
+// repeatable from its seed in either regime. Once MinProcesses have run it
+// stops as soon as every comparison's pooled interval meets the precision in
+// Options at the end of a whole Rotation, or of a whole wave in a parallel
+// run, and in any case after MaxProcesses. If a child of a wave fails, its
+// siblings are killed and the error of the lowest failing index is returned. It returns the pooled
 // results. In a child, Run perturbs the heap from the process's seed (see
 // [rtcompare.PerturbHeap]), calls suite once, hands its records to the parent
 // through a file, and returns Results with Child set; the caller should then
@@ -235,8 +319,8 @@ func (r Results) String() string {
 // Use it for any comparison whose data is larger than the caches or full of
 // pointers, where a single process's interval is known to be several times too
 // narrow; see [rtcompare.Combine] for the numbers. It costs a process start and
-// the whole suite per process, and out of cache that has taken 13 to 15
-// processes. Keep the machine awake while it runs: each Report notices a
+// the whole suite per process, and out of cache that has taken from 13 to more
+// than 40 processes; see [DefaultMaxProcesses] and Options.Parallel. Keep the machine awake while it runs: each Report notices a
 // suspension, but the time is lost.
 //
 // An error is returned for invalid options, if a child cannot be started,
@@ -258,24 +342,28 @@ func Run(opt Options, suite func(*Process) error) (Results, error) {
 	// directory is not worth failing a finished run for.
 	defer func() { _ = os.RemoveAll(dir) }()
 
-	var res Results
+	w := newWaveRunner(opt, dir)
+	res := Results{Parallel: opt.Parallel, ChildGOMAXPROCS: w.gomaxprocs}
 	index := map[string]int{}
-	for i := range opt.MaxProcesses {
-		seed := splitmix(opt.Seed + uint64(i))
-		recs, err := runProcess(opt, filepath.Join(dir, strconv.Itoa(i)+".json"), i, seed)
+	for start := 0; start < opt.MaxProcesses; start += opt.Parallel {
+		recs, err := w.run(start, min(opt.Parallel, opt.MaxProcesses-start))
 		if err != nil {
 			return res, err
 		}
-		res.Processes++
-		res.Seeds = append(res.Seeds, seed)
-		for _, rec := range recs {
-			j, ok := index[rec.Name]
-			if !ok {
-				j = len(res.Comparisons)
-				index[rec.Name] = j
-				res.Comparisons = append(res.Comparisons, Comparison{Name: rec.Name})
+		// In index order, whichever child finished first, so that a run is
+		// repeatable from its seed.
+		for k, wave := range recs {
+			res.Processes++
+			res.Seeds = append(res.Seeds, processSeed(opt.Seed, start+k))
+			for _, rec := range wave {
+				j, ok := index[rec.Name]
+				if !ok {
+					j = len(res.Comparisons)
+					index[rec.Name] = j
+					res.Comparisons = append(res.Comparisons, Comparison{Name: rec.Name})
+				}
+				res.Comparisons[j].Reports = append(res.Comparisons[j].Reports, rec.report())
 			}
-			res.Comparisons[j].Reports = append(res.Comparisons[j].Reports, rec.report())
 		}
 		if err := res.pool(opt.Level); err != nil {
 			return res, err
@@ -291,25 +379,25 @@ func Run(opt Options, suite func(*Process) error) (Results, error) {
 	return res, nil
 }
 
+// processSeed is the seed of process i: the same for a given run seed however
+// many processes run at a time.
+func processSeed(runSeed uint64, i int) uint64 {
+	return splitmix(runSeed + uint64(i))
+}
+
 // resolve checks the options and fills in their defaults.
 func (opt Options) resolve() (Options, error) {
-	if opt.MinProcesses == 0 {
-		opt.MinProcesses = DefaultMinProcesses
-	}
-	if opt.MaxProcesses == 0 {
-		opt.MaxProcesses = max(DefaultMaxProcesses, opt.MinProcesses)
-	}
-	if opt.MinProcesses < 3 {
-		return opt, fmt.Errorf("multiproc: MinProcesses must be at least 3, got %d", opt.MinProcesses)
-	}
-	if opt.MaxProcesses < opt.MinProcesses {
-		return opt, fmt.Errorf("multiproc: MaxProcesses (%d) must not be below MinProcesses (%d)", opt.MaxProcesses, opt.MinProcesses)
+	if opt.Parallel < 0 {
+		return opt, fmt.Errorf("multiproc: Parallel must not be negative, got %d", opt.Parallel)
 	}
 	if opt.Rotation == 0 {
 		opt.Rotation = DefaultRotation
 	}
 	if opt.Rotation < 0 {
 		return opt, fmt.Errorf("multiproc: Rotation must not be negative, got %d", opt.Rotation)
+	}
+	if err := opt.resolveCounts(); err != nil {
+		return opt, err
 	}
 	if opt.AbsPrecision == 0 {
 		opt.AbsPrecision = DefaultAbsPrecision
@@ -346,6 +434,43 @@ func (opt Options) resolve() (Options, error) {
 	return opt, nil
 }
 
+// resolveCounts settles the wave size and the process budget. Afterwards
+// Parallel is the wave size, 1 for a serial run, and in a parallel run both
+// MinProcesses and MaxProcesses are whole waves.
+func (opt *Options) resolveCounts() error {
+	serial := opt.Parallel <= 1
+	opt.Parallel = max(1, opt.Parallel)
+	if !serial {
+		opt.Parallel = roundUp(opt.Parallel, opt.Rotation)
+	}
+	if opt.MinProcesses == 0 {
+		opt.MinProcesses = DefaultMinProcesses
+	}
+	if opt.MinProcesses < 3 {
+		return fmt.Errorf("multiproc: MinProcesses must be at least 3, got %d", opt.MinProcesses)
+	}
+	if serial {
+		if opt.MaxProcesses == 0 {
+			opt.MaxProcesses = max(DefaultMaxProcesses, opt.MinProcesses)
+		}
+	} else {
+		opt.MinProcesses = roundUp(opt.MinProcesses, opt.Parallel)
+		if opt.MaxProcesses == 0 {
+			opt.MaxProcesses = max(DefaultMaxWaves*opt.Parallel, opt.MinProcesses)
+		}
+		opt.MaxProcesses = roundUp(opt.MaxProcesses, opt.Parallel)
+	}
+	if opt.MaxProcesses < opt.MinProcesses {
+		return fmt.Errorf("multiproc: MaxProcesses (%d) must not be below MinProcesses (%d)", opt.MaxProcesses, opt.MinProcesses)
+	}
+	return nil
+}
+
+// roundUp rounds n up to a multiple of step.
+func roundUp(n, step int) int {
+	return (n + step - 1) / step * step
+}
+
 // pool combines every comparison that at least three processes recorded.
 func (r *Results) pool(level float64) error {
 	for i := range r.Comparisons {
@@ -373,17 +498,25 @@ func (r *Results) precise(abs, rel float64) bool {
 }
 
 // runProcess starts one child and reads back what it recorded.
-func runProcess(opt Options, out string, i int, seed uint64) ([]record, error) {
-	cmd := exec.Command(opt.Executable, opt.Args...)
-	cmd.Env = append(os.Environ(),
+func runProcess(ctx context.Context, opt Options, out string, i int, stdout, stderr io.Writer, env []string) ([]record, error) {
+	seed := processSeed(opt.Seed, i)
+	cmd := exec.CommandContext(ctx, opt.Executable, opt.Args...)
+	cmd.Env = append(append(os.Environ(), env...),
 		envOut+"="+out,
 		envSeed+"="+strconv.FormatUint(seed, 10),
 		envIndex+"="+strconv.Itoa(i),
 	)
-	cmd.Stdout, cmd.Stderr = opt.Stdout, opt.Stderr
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("multiproc: process %d (seed %d) failed after %s: %w", i, seed, time.Since(start).Round(time.Millisecond), childError(out, err))
+		suiteErr := childError(out, err)
+		// Killed because a sibling failed: its own error would only hide the
+		// one that caused the cancellation. A child that got as far as writing
+		// a suite error failed in its own right, cancelled or not.
+		if ctx.Err() != nil && suiteErr == err {
+			return nil, errCanceled
+		}
+		return nil, fmt.Errorf("multiproc: process %d (seed %d) failed after %s: %w", i, seed, time.Since(start).Round(time.Millisecond), suiteErr)
 	}
 	data, err := os.ReadFile(out)
 	if err != nil {
@@ -401,6 +534,10 @@ func runProcess(opt Options, out string, i int, seed uint64) ([]record, error) {
 	}
 	return f.Records, nil
 }
+
+// errCanceled marks a child that was killed because a sibling in its wave
+// failed.
+var errCanceled = errors.New("multiproc: canceled because another process of the wave failed")
 
 // childError prefers the suite's own error, if the child got as far as writing
 // it, over the bare exit status.

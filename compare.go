@@ -397,10 +397,20 @@ func suspendedSince(start time.Time) time.Duration {
 	return suspendGap(time.Now().Round(0).Sub(start.Round(0)), time.Since(start))
 }
 
-// liveHeap reads the live heap as of the last garbage collection. It is used
-// rather than the heap in use, which includes garbage not yet collected, and
-// rather than forcing a collection, which would be a side effect of Compare.
+// liveHeap reads the live heap as of the last garbage collection, less the
+// filler of PerturbHeap, which is not the program's data. It is used rather
+// than the heap in use, which includes garbage not yet collected, and rather
+// than forcing a collection, which would be a side effect of Compare.
 func liveHeap() uint64 {
+	live := rawLiveHeap()
+	if filler := uint64(max(0, spacerBytes.Load())); filler < live {
+		return live - filler
+	}
+	return 0
+}
+
+// rawLiveHeap is the runtime's live heap as it reports it.
+func rawLiveHeap() uint64 {
 	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
 	metrics.Read(sample)
 	if sample[0].Value.Kind() != metrics.KindUint64 {

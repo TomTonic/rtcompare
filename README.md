@@ -165,7 +165,7 @@ Checking the measurement itself:
 
 Across processes:
 
-- `multiproc.Main(Options, pairs...)` / `multiproc.RunTest(t, Options, pairs...)` — the whole job in one call: each `Pair` says how to build candidate A and B, and the program is re-executed as child processes, one at a time, each with its own heap layout and with the build order alternating, until every pooled interval is within ±2 points or ±10% of the difference (at least 5, at most 20 processes). `multiproc.Run(Options, suite)` does the same for a suite function of your own.
+- `multiproc.Main(Options, pairs...)` / `multiproc.RunTest(t, Options, pairs...)` — the whole job in one call: each `Pair` says how to build candidate A and B, and the program is re-executed as child processes, each with its own heap layout and with the build order alternating, until every pooled interval is within ±2 points or ±10% of the difference (at least 5, at most 40 processes serially). `Options.Parallel` runs the children in waves instead, see below. `multiproc.Run(Options, suite)` does the same for a suite function of your own.
 - `Combine(reports, level)` — pools per-process reports of one comparison into a `Pooled` result: a t interval over the per-process deltas, plus how far the processes scatter beyond their own intervals (`Inflation`, Cochran's Q, I²).
 - `PerturbHeap(seed)` — allocates seeded filler in every small size class and one large block, so that data built afterwards lands at different addresses in each process.
 
@@ -181,6 +181,12 @@ Workloads for mutable data structures (`github.com/TomTonic/rtcompare/workload`)
 - `workload.Cycle(target, Config)` / `workload.Build(target, Config)` — the streams: a cycle of insertions and deletions that ends where it started, and a build from empty with a realistic history.
 - `workload.Replay` — replays a cycle on one structure instance, with the untimed first pass, and `Settle` to return it to its start state. `workload.Cursor` is the bare position, for doing it by hand.
 - `workload.Check(ops, start, end)` — replays a stream against a model and reports the first invalid operation.
+
+### Serial or parallel processes
+
+`multiproc` runs its children one after another by default, each with the machine to itself. `Options.Parallel: N` runs N at a time, in waves, and budgets 10 waves by default. Out of cache that is usually the only way to a precise answer in reasonable time: the variance of the pooled estimate is roughly σ²_between/P + σ²_within/(P·R) for P processes of R samples, the first term dominates by far, and only more processes reduce it. Running them simultaneously multiplies P per hour by N.
+
+Parallel runs measure a loaded machine: the children share the last-level cache, memory bandwidth and clock headroom, like a program with neighbours in production. That is legitimate, but it is a different regime, so never pool or compare its results with a serial run's; `Results.Parallel` records which one ran. Keep N at or below the number of physical cores, since two children on SMT siblings share L1 and L2 and disturb each other far more than neighbours on separate cores. Each child gets `GOMAXPROCS` = CPUs/N (at least 2) unless you set it yourself.
 
 A note on the threshold of `0.0`: every threshold is evaluated as `delta >= t`, so at zero the question is "at least as fast", not "faster". Quantized timings tie often, and every tie counts towards it. Ask for a threshold above zero if you mean strictly faster.
 

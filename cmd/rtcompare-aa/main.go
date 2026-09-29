@@ -65,6 +65,7 @@ type config struct {
 	multi      bool
 	minProcs   int
 	maxProcs   int
+	parallel   int
 	repeats    int
 	validation int
 	warmup     int
@@ -83,6 +84,7 @@ func main() {
 	flag.BoolVar(&c.multi, "multi", false, "run -mode compare in several processes via the multiproc package, perturbing each one's heap and alternating the build order between processes")
 	flag.IntVar(&c.minProcs, "minprocs", 0, "multiproc.Options.MinProcesses (0: default)")
 	flag.IntVar(&c.maxProcs, "maxprocs", 0, "multiproc.Options.MaxProcesses (0: default)")
+	flag.IntVar(&c.parallel, "parallel", 0, "multiproc.Options.Parallel: children running at the same time under -multi (0: serial)")
 	flag.IntVar(&c.repeats, "repeats", 0, "CollectOptions.Repeats (0: default)")
 	flag.IntVar(&c.validation, "validation", 0, "CompareOptions.ValidationRuns (0: default)")
 	flag.IntVar(&c.warmup, "warmup", 0, "CollectOptions.Warmup (0: default)")
@@ -139,9 +141,10 @@ func runMulti(c config) error {
 	res, err := multiproc.Run(multiproc.Options{
 		MinProcesses: c.minProcs,
 		MaxProcesses: c.maxProcs,
+		Parallel:     c.parallel,
 		Stdout:       os.Stdout,
 		Progress: func(r multiproc.Results) {
-			fmt.Fprintf(os.Stderr, "process %d done\n", r.Processes)
+			fmt.Fprintf(os.Stderr, "%d processes done\n", r.Processes)
 		},
 	}, func(p *multiproc.Process) error {
 		// multiproc has already perturbed this process's heap.

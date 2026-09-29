@@ -94,7 +94,7 @@ func Pairs(pairs ...Pair) func(*Process) error {
 // comparisons, see [Pair].
 //
 // In the parent, the process the user started, Main prints a line per finished
-// process to standard error and the pooled results to standard output, then
+// process, or per finished wave in a parallel run, to standard error and the pooled results to standard output, then
 // returns. In a child it runs the pairs once and exits, so that nothing after
 // Main runs there. On an error it prints it to standard error and exits with
 // status 1, in either role.
@@ -119,7 +119,7 @@ func runMain(opt Options, pairs []Pair, stdout, stderr io.Writer) (code int, exi
 	}
 	if opt.Progress == nil {
 		opt.Progress = func(r Results) {
-			_, _ = fmt.Fprintf(stderr, "multiproc: process %d done\n", r.Processes)
+			_, _ = fmt.Fprintf(stderr, "multiproc: %d processes done\n", r.Processes)
 		}
 	}
 	res, err := Run(opt, Pairs(pairs...))

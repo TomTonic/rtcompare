@@ -4,7 +4,10 @@ package rtcompare
 // so that the layout becomes random scatter between processes rather than a
 // bias that every process repeats.
 
-import "runtime"
+import (
+	"runtime"
+	"sync/atomic"
+)
 
 // Spacers holds the allocations [PerturbHeap] made. Its only purpose is to stay
 // reachable: while it is, the memory it occupies is not handed to anything
@@ -94,8 +97,20 @@ func PerturbHeap(seed uint64) *Spacers {
 		}
 	}
 	s.large = make([]byte, rng.Uint32N(perturbLargeMax))
+
+	// The filler is not the program's data, and Compare's warning about a
+	// large live heap must not count it: every multiproc child perturbs its
+	// heap, and the filler alone would otherwise trip the warning there for
+	// data of any size. The count is returned once the filler is collected.
+	n := int64(s.Bytes())
+	spacerBytes.Add(n)
+	runtime.AddCleanup(s, func(n int64) { spacerBytes.Add(-n) }, n)
 	return s
 }
+
+// spacerBytes is how much memory the spacers of PerturbHeap still alive
+// occupy, for liveHeap to leave out.
+var spacerBytes atomic.Int64
 
 // smallSizes returns allocation sizes from 8 bytes to 32 KB spaced about an
 // eighth apart, which is roughly how Go spaces its size classes, so that every

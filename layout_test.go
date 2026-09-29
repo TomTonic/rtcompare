@@ -1,8 +1,10 @@
 package rtcompare
 
 import (
+	"runtime"
 	"slices"
 	"testing"
+	"time"
 )
 
 // TestDPRNGShuffleIsASeededPermutation checks the helper for randomizing the
@@ -100,5 +102,38 @@ func TestSmallSizesCoverTheSizeClasses(t *testing.T) {
 		if step <= 0 || sizes[i]%8 != 0 || step > sizes[i-1]/8+8 {
 			t.Errorf("step from %d to %d", sizes[i-1], sizes[i])
 		}
+	}
+}
+
+// TestLiveHeapLeavesOutTheFiller checks that the heap perturbation every
+// multiproc child applies does not trip Compare's warning about a large live
+// heap on its own. The filler has to appear in the runtime's live heap but not
+// in the figure Compare reports, and has to stop being subtracted once it has
+// been collected.
+func TestLiveHeapLeavesOutTheFiller(t *testing.T) {
+	var s *Spacers
+	for seed := uint64(0); s == nil || s.Bytes() < 8<<20; seed++ {
+		s = PerturbHeap(seed)
+	}
+	runtime.GC()
+	raw, reported, filler := rawLiveHeap(), liveHeap(), uint64(s.Bytes())
+	s.KeepAlive()
+	if raw < filler {
+		t.Fatalf("the runtime reports %d live bytes, less than the %d of filler; the test cannot tell anything apart", raw, filler)
+	}
+	if reported > raw-filler/2 {
+		t.Errorf("live heap %d with %d bytes of filler in a raw %d; the filler should be left out", reported, filler, raw)
+	}
+
+	s = nil
+	for range 5 {
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond) // cleanups run on their own goroutine
+		if spacerBytes.Load() == 0 {
+			break
+		}
+	}
+	if left := spacerBytes.Load(); left != 0 {
+		t.Errorf("%d bytes of filler still subtracted after it was collected", left)
 	}
 }

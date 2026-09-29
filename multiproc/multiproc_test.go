@@ -168,11 +168,11 @@ func TestOptionsResolve(t *testing.T) {
 			}
 		})
 	}
-	opt, err := Options{MinProcesses: 30}.resolve()
+	opt, err := Options{MinProcesses: 50}.resolve()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if opt.MaxProcesses != 30 || opt.Rotation != DefaultRotation || opt.AbsPrecision != DefaultAbsPrecision || opt.RelPrecision != DefaultRelPrecision ||
+	if opt.MaxProcesses != 50 || opt.Rotation != DefaultRotation || opt.AbsPrecision != DefaultAbsPrecision || opt.RelPrecision != DefaultRelPrecision ||
 		opt.Seed == 0 || opt.Executable == "" || opt.Args == nil || opt.Stdout == nil || opt.Stderr == nil {
 		t.Errorf("defaults not filled in: %+v", opt)
 	}
