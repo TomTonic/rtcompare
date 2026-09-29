@@ -103,18 +103,72 @@ func Pairs(pairs ...Pair) func(*Process) error {
 //		multiproc.Main(multiproc.Options{}, multiproc.Pair{Name: "lookup", A: buildA, B: buildB})
 //	}
 func Main(opt Options, pairs ...Pair) {
-	if code, exit := runMain(opt, pairs, os.Stdout, os.Stderr); exit {
+	exitMain(runMain(opt, checkPairs(pairs), Pairs(pairs...), os.Stdout, os.Stderr))
+}
+
+// MainSuite is [Main] for a suite instead of pairs: it runs suite in several
+// processes and prints the pooled results, and is meant to be the whole of a
+// benchmark program's main function.
+//
+// Parameters: opt configures the processes, see [Options]; suite is the
+// measurement one process performs, see [Run]. Suites from other packages,
+// such as the workload package's Suite, fit here, and [Suites] combines
+// several of them, pairs included through [Pairs].
+//
+// It behaves like Main in every other respect, printing progress and results
+// in the parent and exiting in a child.
+//
+//	func main() {
+//		multiproc.MainSuite(multiproc.Options{},
+//			workload.Suite("map vs Set3", 1_000_000, goMap, set3Set, workload.Options{}))
+//	}
+func MainSuite(opt Options, suite func(*Process) error) {
+	exitMain(runMain(opt, checkSuite(suite), suite, os.Stdout, os.Stderr))
+}
+
+// Suites combines several suites into one that runs them in turn, in the
+// order given, and stops at the first error.
+//
+// Parameters: suites are the suites to run, none of them nil.
+//
+// Use it to measure several kinds of comparison in the same processes, for
+// example pairs and a workload suite:
+//
+//	multiproc.MainSuite(opt, multiproc.Suites(multiproc.Pairs(lookup), workload.Suite(...)))
+func Suites(suites ...func(*Process) error) func(*Process) error {
+	return func(p *Process) error {
+		for _, suite := range suites {
+			if err := suite(p); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// checkSuite rejects a nil suite before any process is started.
+func checkSuite(suite func(*Process) error) error {
+	if suite == nil {
+		return fmt.Errorf("multiproc: no suite to run")
+	}
+	return nil
+}
+
+// exitMain ends the program as runMain decided.
+func exitMain(code int, exit bool) {
+	if exit {
 		os.Exit(code)
 	}
 }
 
-// runMain is Main without the exit, so that it can be tested. It reports the
-// status to exit with, and whether to exit at all. Its output goes to the
-// terminal, where a failed write leaves nothing better to do than carry on, so
-// write errors are deliberately ignored.
-func runMain(opt Options, pairs []Pair, stdout, stderr io.Writer) (code int, exit bool) {
-	if err := checkPairs(pairs); err != nil {
-		_, _ = fmt.Fprintln(stderr, err)
+// runMain is Main without the exit, so that it can be tested. invalid is the
+// result of checking what is to be run, before any process is started. It
+// reports the status to exit with, and whether to exit at all. Its output goes
+// to the terminal, where a failed write leaves nothing better to do than carry
+// on, so write errors are deliberately ignored.
+func runMain(opt Options, invalid error, suite func(*Process) error, stdout, stderr io.Writer) (code int, exit bool) {
+	if invalid != nil {
+		_, _ = fmt.Fprintln(stderr, invalid)
 		return 1, true
 	}
 	if opt.Progress == nil {
@@ -122,7 +176,7 @@ func runMain(opt Options, pairs []Pair, stdout, stderr io.Writer) (code int, exi
 			_, _ = fmt.Fprintf(stderr, "multiproc: %d processes done\n", r.Processes)
 		}
 	}
-	res, err := Run(opt, Pairs(pairs...))
+	res, err := Run(opt, suite)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 1, true
@@ -153,13 +207,37 @@ func runMain(opt Options, pairs []Pair, stdout, stderr io.Writer) (code int, exi
 //	}
 func RunTest(t testing.TB, opt Options, pairs ...Pair) Results {
 	t.Helper()
-	if err := checkPairs(pairs); err != nil {
-		t.Fatal(err)
+	return runTest(t, opt, checkPairs(pairs), Pairs(pairs...))
+}
+
+// RunTestSuite is [RunTest] for a suite instead of pairs, such as the workload
+// package's Suite or several suites combined with [Suites].
+//
+// Parameters: t is the calling test; opt configures the processes, see
+// [Options]; suite is the measurement one process performs, see [Run].
+//
+// It behaves like RunTest in every other respect.
+//
+//	func TestSets(t *testing.T) {
+//		res := multiproc.RunTestSuite(t, multiproc.Options{},
+//			workload.Suite("map vs Set3", 100_000, goMap, set3Set, workload.Options{}))
+//		...
+//	}
+func RunTestSuite(t testing.TB, opt Options, suite func(*Process) error) Results {
+	t.Helper()
+	return runTest(t, opt, checkSuite(suite), suite)
+}
+
+// runTest is what RunTest and RunTestSuite share.
+func runTest(t testing.TB, opt Options, invalid error, suite func(*Process) error) Results {
+	t.Helper()
+	if invalid != nil {
+		t.Fatal(invalid)
 	}
 	if opt.Args == nil {
 		opt.Args = []string{"-test.run=^" + regexp.QuoteMeta(t.Name()) + "$"}
 	}
-	res, err := Run(opt, Pairs(pairs...))
+	res, err := Run(opt, suite)
 	if res.Child {
 		// The parent reads any error from the child's results file.
 		t.SkipNow()

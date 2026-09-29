@@ -165,7 +165,7 @@ Checking the measurement itself:
 
 Across processes:
 
-- `multiproc.Main(Options, pairs...)` / `multiproc.RunTest(t, Options, pairs...)` — the whole job in one call: each `Pair` says how to build candidate A and B, and the program is re-executed as child processes, each with its own heap layout and with the build order alternating, until every pooled interval is within ±2 points or ±10% of the difference (at least 5, at most 40 processes serially). `Options.Parallel` runs the children in waves instead, see below. `multiproc.Run(Options, suite)` does the same for a suite function of your own.
+- `multiproc.Main(Options, pairs...)` / `multiproc.RunTest(t, Options, pairs...)` — the whole job in one call: each `Pair` says how to build candidate A and B, and the program is re-executed as child processes, each with its own heap layout and with the build order alternating, until every pooled interval is within ±2 points or ±10% of the difference (at least 5, at most 40 processes serially). `Options.Parallel` runs the children in waves instead, see below. `multiproc.MainSuite(Options, suite)` and `multiproc.RunTestSuite(t, Options, suite)` take a suite instead, such as `workload.Suite`, and `multiproc.Suites(...)` combines several; `multiproc.Run(Options, suite)` is the general form underneath.
 - `Combine(reports, level)` — pools per-process reports of one comparison into a `Pooled` result: a t interval over the per-process deltas, plus how far the processes scatter beyond their own intervals (`Inflation`, Cochran's Q, I²).
 - `PerturbHeap(seed)` — allocates seeded filler in every small size class and one large block, so that data built afterwards lands at different addresses in each process.
 
@@ -181,6 +181,7 @@ Workloads for mutable data structures (`github.com/TomTonic/rtcompare/workload`)
 - `workload.Cycle(target, Config)` / `workload.Build(target, Config)` — the streams: a cycle of insertions and deletions that ends where it started, and a build from empty with a realistic history.
 - `workload.Replay` — replays a cycle on one structure instance, with the untimed first pass, and `Settle` to return it to its start state. `workload.Cursor` is the bare position, for doing it by hand.
 - `workload.Check(ops, start, end)` — replays a stream against a model and reports the first invalid operation.
+- `workload.Suite(name, target, a, b, Options)` — the same comparison for `multiproc.MainSuite` / `multiproc.RunTestSuite`, run in several processes with both answers pooled; the one to use once the structures outgrow the caches.
 
 ### Serial or parallel processes
 

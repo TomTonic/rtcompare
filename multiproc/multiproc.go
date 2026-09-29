@@ -28,7 +28,9 @@
 //	}
 //
 // In a test, [RunTest] does the same and returns the results for assertions.
-// [Run] takes an arbitrary suite for anything the pairs do not cover.
+// [MainSuite] and [RunTestSuite] take a suite instead of pairs, such as the
+// workload package's Suite for comparing data structures, and [Suites]
+// combines several suites into one. [Run] is the general form underneath.
 //
 // # Two regimes
 //

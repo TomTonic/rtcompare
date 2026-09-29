@@ -1,6 +1,7 @@
 package multiproc
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,13 +116,18 @@ func TestRunTestPoolsPairsAcrossProcesses(t *testing.T) {
 	}
 }
 
-// TestRunMainRoles checks what Main does in each role without exiting the
-// test binary: invalid pairs end the program with status 1, and a child runs
-// the pairs, writes its results for the parent and ends with status 0.
+// TestRunMainRoles checks what Main and MainSuite do in each role without
+// exiting the test binary: invalid pairs or a missing suite end the program
+// with status 1, and a child runs the pairs, writes its results for the parent
+// and ends with status 0.
 func TestRunMainRoles(t *testing.T) {
 	var out, errOut strings.Builder
-	if code, exit := runMain(Options{}, nil, &out, &errOut); code != 1 || !exit || !strings.Contains(errOut.String(), "no pairs") {
+	if code, exit := runMain(Options{}, checkPairs(nil), Pairs(), &out, &errOut); code != 1 || !exit || !strings.Contains(errOut.String(), "no pairs") {
 		t.Errorf("invalid pairs: code %d, exit %v, stderr %q", code, exit, errOut.String())
+	}
+
+	if code, exit := runMain(Options{}, checkSuite(nil), nil, &out, &errOut); code != 1 || !exit || !strings.Contains(errOut.String(), "no suite") {
+		t.Errorf("nil suite: code %d, exit %v, stderr %q", code, exit, errOut.String())
 	}
 
 	file := filepath.Join(t.TempDir(), "child.json")
@@ -129,10 +135,32 @@ func TestRunMainRoles(t *testing.T) {
 	t.Setenv(envSeed, "7")
 	t.Setenv(envIndex, "0")
 	pair := Pair{Name: "x", A: func() rtcompare.Candidate { return spin("a", 1) }, B: func() rtcompare.Candidate { return spin("b", 1) }, Options: quick}
-	if code, exit := runMain(Options{}, []Pair{pair}, &out, &errOut); code != 0 || !exit {
+	if code, exit := runMain(Options{}, checkPairs([]Pair{pair}), Pairs(pair), &out, &errOut); code != 0 || !exit {
 		t.Errorf("child: code %d, exit %v, stderr %q", code, exit, errOut.String())
 	}
 	if data, err := os.ReadFile(file); err != nil || !strings.Contains(string(data), `"name":"x"`) {
 		t.Errorf("child results file: %s, %v", data, err)
+	}
+}
+
+// TestSuitesRunInTurn checks the way several kinds of measurement share one
+// run of processes: combined suites run in the order given, in the same
+// process, and the first error ends the process's work and is what the parent
+// sees.
+func TestSuitesRunInTurn(t *testing.T) {
+	var ran []string
+	step := func(name string, err error) func(*Process) error {
+		return func(*Process) error {
+			ran = append(ran, name)
+			return err
+		}
+	}
+	if err := Suites(step("a", nil), step("b", nil))(&Process{}); err != nil || strings.Join(ran, "") != "ab" {
+		t.Errorf("ran %q with error %v, want ab and no error", ran, err)
+	}
+	ran = nil
+	failure := errors.New("b failed")
+	if err := Suites(step("a", nil), step("b", failure), step("c", nil))(&Process{}); !errors.Is(err, failure) || strings.Join(ran, "") != "ab" {
+		t.Errorf("ran %q with error %v, want ab and the error of b", ran, err)
 	}
 }

@@ -137,6 +137,11 @@ func indent(s string) string {
 // The two answers can disagree, and then that is the result: one structure
 // can be faster to use and slower to build. Read both.
 //
+// Both answers describe this one process. For structures of more than a few
+// megabytes, or full of pointers, where the structures lie in memory moves the
+// result by several points and differently in the next process; run the
+// comparison through [Suite] with the multiproc package there.
+//
 // The cost is that of two [rtcompare.Compare] calls, the build one dominated
 // by the builds it performs, about 1,300 at the defaults; see
 // [BuildRepeats].
@@ -148,6 +153,13 @@ func indent(s string) string {
 //	if err != nil { ... }
 //	fmt.Println(res)
 func Compare[SA, SB any](target int, a Structure[SA], b Structure[SB], opt Options) (Result, error) {
+	return compare(target, a, b, opt, false)
+}
+
+// compare is Compare with a choice of which structure's build starts: A's, or
+// B's when bFirst is set, which is how [Suite] alternates the build order
+// between processes.
+func compare[SA, SB any](target int, a Structure[SA], b Structure[SB], opt Options, bFirst bool) (Result, error) {
 	if err := a.check("A"); err != nil {
 		return Result{}, err
 	}
@@ -164,7 +176,7 @@ func Compare[SA, SB any](target int, a Structure[SA], b Structure[SB], opt Optio
 	}
 	res := Result{Target: target, CycleOps: len(cycle), BuildOps: len(build)}
 
-	res.SteadyState, err = compareSteadyState(a, b, build, cycle, opt.SteadyState)
+	res.SteadyState, err = compareSteadyState(a, b, build, cycle, opt.SteadyState, bFirst)
 	if err != nil {
 		return res, fmt.Errorf("workload: steady-state comparison: %w", err)
 	}
@@ -179,13 +191,53 @@ func Compare[SA, SB any](target int, a Structure[SA], b Structure[SB], opt Optio
 
 // compareSteadyState builds one structure of each kind, alternately, and
 // compares the cycle replayed on each.
-func compareSteadyState[SA, SB any](a Structure[SA], b Structure[SB], build, cycle []Op, opt rtcompare.CompareOptions) (rtcompare.Report, error) {
+func compareSteadyState[SA, SB any](a Structure[SA], b Structure[SB], build, cycle []Op, opt rtcompare.CompareOptions, bFirst bool) (rtcompare.Report, error) {
 	sa, sb := a.New(), b.New()
 	applyA := func(run []Op) { a.Apply(sa, run) }
 	applyB := func(run []Op) { b.Apply(sb, run) }
-	buildAlternately(build, applyA, applyB)
+	if bFirst {
+		buildAlternately(build, applyB, applyA)
+	} else {
+		buildAlternately(build, applyA, applyB)
+	}
 	ra, rb := NewReplay(cycle, applyA), NewReplay(cycle, applyB)
-	return rtcompare.Compare(ra.Candidate(a.Name), rb.Candidate(b.Name), opt)
+	ca, cb := ra.Candidate(a.Name), rb.Candidate(b.Name)
+	if opt.Collect.InnerLoops == 0 {
+		n, err := calibrateBoth(ca, cb, opt.Collect)
+		if err != nil {
+			return rtcompare.Report{}, err
+		}
+		opt.Collect.InnerLoops = n
+		// Calibration tried different batch sizes on the two, so their
+		// cursors now stand at different points of the cycle, and every later
+		// batch would replay a different stretch of it on each. Back to the
+		// start, both of them, outside any measurement; from here on they
+		// run the same number of batches of the same size and stay in step.
+		ra.Settle()
+		rb.Settle()
+	}
+	return rtcompare.Compare(ca, cb, opt)
+}
+
+// calibrateBoth sizes the batches for both candidates as rtcompare.Compare
+// would, the larger of the two sizes, so that compareSteadyState can bring the
+// replays back into step before the comparison starts.
+func calibrateBoth(a, b rtcompare.Candidate, co rtcompare.CollectOptions) (uint64, error) {
+	opt := rtcompare.CalibrationOptions{
+		MaxQuantizationError: co.MaxQuantizationError,
+		MaxInnerLoops:        co.MaxInnerLoops,
+		GCBetween:            co.GCBetween,
+		DisableGC:            co.DisableGC,
+	}
+	calA, err := rtcompare.CalibrateInnerLoops(a, opt)
+	if err != nil {
+		return 0, fmt.Errorf("calibrating %s: %w", a.Name, err)
+	}
+	calB, err := rtcompare.CalibrateInnerLoops(b, opt)
+	if err != nil {
+		return 0, fmt.Errorf("calibrating %s: %w", b.Name, err)
+	}
+	return max(calA.InnerLoops, calB.InnerLoops), nil
 }
 
 // alternateChunk is how many operations of the build stream go to one
@@ -193,14 +245,17 @@ func compareSteadyState[SA, SB any](a Structure[SA], b Structure[SB], build, cyc
 const alternateChunk = 256
 
 // buildAlternately applies the stream to both structures in alternating
-// chunks. Built one after the other, the structure built second would be the
-// one in the caches and in fresher memory when the measurement starts, which
-// has been measured to make an identical structure a few percent faster.
-func buildAlternately(ops []Op, applyA, applyB func([]Op)) {
+// chunks, each chunk to first and then to second. Built one after the other,
+// the structure built second would be the one in the caches and in fresher
+// memory when the measurement starts, which has been measured to make an
+// identical structure a few percent faster. Chunks shrink that head start to
+// one chunk, which is second's; [Suite] alternates which structure is second
+// between processes, so that pooling averages the rest out.
+func buildAlternately(ops []Op, first, second func([]Op)) {
 	for start := 0; start < len(ops); start += alternateChunk {
 		run := ops[start:min(start+alternateChunk, len(ops))]
-		applyA(run)
-		applyB(run)
+		first(run)
+		second(run)
 	}
 }
 
