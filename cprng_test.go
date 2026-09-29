@@ -1,6 +1,7 @@
 package rtcompare
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"runtime"
@@ -124,17 +125,42 @@ func chiSquarePValue(x2 float64, df int) float64 {
 	return chiSquarePValueApprox(x2, df)
 }
 
+// uniformityFailLevel is the p-value below which requireUniform fails. It is
+// far below the customary 0.05 because the suite runs several of these checks
+// on every push: at 0.05 each, a correct generator failed about one run in
+// ten. A defect worth catching, such as a stuck bit or a biased byte, drives
+// p to practically zero at the sample sizes used here, so the lower level
+// costs no power against it.
+const uniformityFailLevel = 1e-4
+
+// requireUniform exists so that every uniformity test applies the same
+// Pearson χ² check and the same failure level. It tests counts against equal
+// expected counts per bin, logs the statistic and p-value, and fails the test
+// if p is below uniformityFailLevel.
+func requireUniform(t *testing.T, label string, counts []int) {
+	t.Helper()
+	total := 0
+	for _, c := range counts {
+		total += c
+	}
+	expected := float64(total) / float64(len(counts))
+	x2 := chiSquare(counts, expected)
+	p := chiSquarePValue(x2, len(counts)-1)
+	if p < uniformityFailLevel {
+		t.Errorf("%s over %d bins is not uniform: χ²=%.3f, p=%.2g below %.0e", label, len(counts), x2, p, uniformityFailLevel)
+		return
+	}
+	t.Logf("%s over %d bins: χ²=%.3f, p=%.3f", label, len(counts), x2, p)
+}
+
 // TestCPRNG_Uint8_Uniformity performs a statistical uniformity check of the
 // CPRNG.Uint8 output. It draws a large number of samples from a CPRNG
 // instance initialized with parameter 8192, tallies occurrences for each of
 // the 256 possible uint8 values, and computes a χ² statistic and p-value
-// against the expected uniform distribution. The test logs whether the null
-// hypothesis of uniformity is rejected at significance level α=0.05.
-// Note: this is a probabilistic test — occasional failures may occur by chance.
+// against the expected uniform distribution, see requireUniform.
 func TestCPRNG_Uint8_Uniformity(t *testing.T) {
 	const samples = 1 << 20
 	const bins = 256
-	const alpha = 0.05
 	c := NewCPRNG(8192)
 
 	counts := make([]int, bins)
@@ -142,31 +168,17 @@ func TestCPRNG_Uint8_Uniformity(t *testing.T) {
 		counts[c.Uint8()]++
 	}
 
-	expected := float64(samples) / float64(bins)
-
-	x2 := chiSquare(counts, expected)
-	df := bins - 1
-	p := chiSquarePValue(x2, df)
-
-	if p < alpha {
-		t.Fatalf("χ² test result → H0 rejected (not uniform at significance level α=%.2f): χ²=%.3f p=%.3f\n\nPLEASE NOTE: This test is probabilistic and may occasionally fail by chance.", alpha, x2, p)
-	} else {
-		t.Logf("χ² test result → H0 NOT rejected (no evidence against uniformity at α=%.2f): χ²=%.3f p=%.3f", alpha, x2, p)
-	}
-
+	requireUniform(t, "Uint8", counts)
 }
 
 // TestCPRNG_Uint16_Uniformity performs a statistical uniformity check of the
 // CPRNG.Uint16 output. It draws a large number of samples from a CPRNG
 // instance initialized with parameter 8192, tallies occurrences for each of
 // the 65536 possible uint16 values, and computes a χ² statistic and p-value
-// against the expected uniform distribution. The test logs whether the null
-// hypothesis of uniformity is rejected at significance level α=0.05.
-// Note: this is a probabilistic test — occasional failures may occur by chance.
+// against the expected uniform distribution, see requireUniform.
 func TestCPRNG_Uint16_Uniformity(t *testing.T) {
 	const samples = 1 << 22
 	const bins = 65536
-	const alpha = 0.05
 	c := NewCPRNG(8192)
 
 	counts := make([]int, bins)
@@ -175,39 +187,28 @@ func TestCPRNG_Uint16_Uniformity(t *testing.T) {
 		counts[int(v)]++
 	}
 
-	expected := float64(samples) / float64(bins)
-
-	x2 := chiSquare(counts, expected)
-	df := bins - 1
-	p := chiSquarePValue(x2, df)
-
-	if p < alpha {
-		t.Fatalf("χ² test result → H0 rejected (not uniform at significance level α=%.2f): χ²=%.3f p=%.3f\n\nPLEASE NOTE: This test is probabilistic and may occasionally fail by chance.", alpha, x2, p)
-	} else {
-		t.Logf("χ² test result → H0 NOT rejected (no evidence against uniformity at α=%.2f): χ²=%.3f p=%.3f", alpha, x2, p)
-	}
+	requireUniform(t, "Uint16", counts)
 }
 
 // TestCPRNG_Float32_Uniformity samples 2^22 Float32 values and
-// performs a chi-squared uniformity check across 65536 buckets. The test logs
-// chi2 and p-value and follows the same structure as TestCPRNG_Uint16_Uniformity.
+// performs a chi-squared uniformity check across 65536 buckets, see
+// requireUniform. It also fails on NaN, Inf or a value outside [0, 1).
 func TestCPRNG_Float32_Uniformity(t *testing.T) {
 	const samples = 1 << 22
 	const bins = 65536
-	const alpha = 0.05
 	c := NewCPRNG(8192)
 
 	counts := make([]int, bins)
 	for range samples {
 		v := c.Float32()
 		if math.IsNaN(float64(v)) {
-			t.Fatalf("UniformFloat32 returned NaN")
+			t.Fatalf("Float32 returned NaN")
 		}
 		if math.IsInf(float64(v), 0) {
-			t.Fatalf("UniformFloat32 returned Inf")
+			t.Fatalf("Float32 returned Inf")
 		}
 		if v < 0.0 || v >= 1.0 {
-			t.Fatalf("UniformFloat32 returned out-of-bounds value: %f", v)
+			t.Fatalf("Float32 returned out-of-bounds value: %f", v)
 		}
 		idx := int(float32(bins) * v)
 		if idx < 0 {
@@ -218,38 +219,28 @@ func TestCPRNG_Float32_Uniformity(t *testing.T) {
 		counts[idx]++
 	}
 
-	expected := float64(samples) / float64(bins)
-	x2 := chiSquare(counts, expected)
-	df := bins - 1
-	p := chiSquarePValue(x2, df)
-
-	if p < alpha {
-		t.Logf("χ² test result → H0 rejected (not uniform at significance level α=%.2f): χ²=%.3f p=%.3f\n\nPLEASE NOTE: This test is probabilistic and may occasionally fail by chance.", alpha, x2, p)
-	} else {
-		t.Logf("χ² test result → H0 NOT rejected (no evidence against uniformity at α=%.2f): χ²=%.3f p=%.3f", alpha, x2, p)
-	}
+	requireUniform(t, "Float32", counts)
 }
 
 // TestCPRNG_Float64_Uniformity samples 2^22 Float64 values and
-// performs a chi-squared uniformity check across 65536 buckets. The test logs
-// chi2 and p-value and follows the same structure as TestCPRNG_Uint16_Uniformity.
+// performs a chi-squared uniformity check across 65536 buckets, see
+// requireUniform. It also fails on NaN, Inf or a value outside [0, 1).
 func TestCPRNG_Float64_Uniformity(t *testing.T) {
 	const samples = 1 << 22
 	const bins = 65536
-	const alpha = 0.05
 	c := NewCPRNG(8192)
 
 	counts := make([]int, bins)
 	for range samples {
 		v := c.Float64()
 		if math.IsNaN(float64(v)) {
-			t.Fatalf("UniformFloat32 returned NaN")
+			t.Fatalf("Float64 returned NaN")
 		}
 		if math.IsInf(float64(v), 0) {
-			t.Fatalf("UniformFloat32 returned Inf")
+			t.Fatalf("Float64 returned Inf")
 		}
 		if v < 0.0 || v >= 1.0 {
-			t.Fatalf("UniformFloat32 returned out-of-bounds value: %f", v)
+			t.Fatalf("Float64 returned out-of-bounds value: %f", v)
 		}
 		idx := int(float64(bins) * v)
 		if idx < 0 {
@@ -260,16 +251,7 @@ func TestCPRNG_Float64_Uniformity(t *testing.T) {
 		counts[idx]++
 	}
 
-	expected := float64(samples) / float64(bins)
-	x2 := chiSquare(counts, expected)
-	df := bins - 1
-	p := chiSquarePValue(x2, df)
-
-	if p < alpha {
-		t.Logf("χ² test result → H0 rejected (not uniform at significance level α=%.2f): χ²=%.3f p=%.3f\n\nPLEASE NOTE: This test is probabilistic and may occasionally fail by chance.", alpha, x2, p)
-	} else {
-		t.Logf("χ² test result → H0 NOT rejected (no evidence against uniformity at α=%.2f): χ²=%.3f p=%.3f", alpha, x2, p)
-	}
+	requireUniform(t, "Float64", counts)
 }
 
 func TestCPRNG_Uint32N_Bounds(t *testing.T) {
@@ -296,9 +278,13 @@ func TestCPRNG_Uint32N_Bounds(t *testing.T) {
 	}
 }
 
+// TestCPRNG_Uint32N_Uniformity checks that CPRNG.Uint32N, which callers use to
+// pick among n choices, favours none of them. It covers small n, where a
+// reduction by modulo would bias the low values, and an n that is not a power
+// of two above 2^16, and requires every n to pass requireUniform over 5
+// million draws.
 func TestCPRNG_Uint32N_Uniformity(t *testing.T) {
 	const samples = 5_000_000
-	const alpha = 0.05
 	binSizes := []uint32{3, 7, 10, 3 * 32768}
 	c := NewCPRNG(8192)
 	for _, bins := range binSizes {
@@ -306,16 +292,7 @@ func TestCPRNG_Uint32N_Uniformity(t *testing.T) {
 		for range samples {
 			counts[c.Uint32N(bins)]++
 		}
-		expected := float64(samples) / float64(bins)
-		x2 := chiSquare(counts, expected)
-		df := bins - 1
-		p := chiSquarePValue(x2, int(df))
-
-		if p < alpha {
-			t.Logf("χ² test result for %d bins → H0 rejected (not uniform at significance level α=%.2f): χ²=%.3f p=%.3f\n\nPLEASE NOTE: This test is probabilistic and may occasionally fail by chance.", bins, alpha, x2, p)
-		} else {
-			t.Logf("χ² test result for %d bins → H0 NOT rejected (no evidence against uniformity at α=%.2f): χ²=%.3f p=%.3f", bins, alpha, x2, p)
-		}
+		requireUniform(t, fmt.Sprintf("Uint32N(%d)", bins), counts)
 	}
 }
 
