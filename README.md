@@ -14,6 +14,17 @@ New to this and not a statistics person? **[Read HOWTO.md](HOWTO.md)** — it wa
 
 Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, deterministic prng, go
 
+## Which call do I need?
+
+| What you compare | Call |
+|---|---|
+| Two functions or code paths whose data fits in the CPU caches | `rtcompare.Compare` |
+| Data structures under insertions and deletions | `workload.Compare` |
+| Anything whose data is larger than the caches, or full of pointers (trees, linked structures, maps of heap objects) | `multiproc.Main` or `multiproc.RunTest` |
+| Data structures under insertions and deletions, larger than the caches | `workload.Suite` with `multiproc.MainSuite` or `multiproc.RunTestSuite` |
+
+"Fits in the caches" means, as a rule of thumb, well below 16 MB of live data for both candidates together; `Compare` warns above that. The reason for the last two rows: for large or pointer-heavy data, where the data happens to lie in memory moves the result by several points, is fixed for the life of a process and different in the next one. A single process then reports a narrow interval around a number the next process does not confirm. `multiproc` runs the comparison in several processes and pools them, treating each process as one observation. See [One process is one observation](HOWTO.md#one-process-is-one-observation).
+
 ## Features
 
 - Answer the whole question in one call: `Compare` sizes the batches, measures what the harness invents on its own, runs the comparison, tests for drift, picks the resampling scheme from the dependence it observed, and reports a verdict with the fine print that qualifies it.
