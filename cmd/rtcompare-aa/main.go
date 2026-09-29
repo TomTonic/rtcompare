@@ -33,6 +33,7 @@ import (
 
 	"github.com/TomTonic/rtcompare"
 	"github.com/TomTonic/rtcompare/multiproc"
+	"github.com/TomTonic/rtcompare/prng"
 )
 
 // node is one cache line: a value, a pointer to follow and padding.
@@ -114,7 +115,7 @@ func run(c config) error {
 	if c.perturb {
 		defer rtcompare.PerturbHeap(c.seed).KeepAlive()
 	}
-	rng := rtcompare.NewDPRNG(c.seed | 1)
+	rng := prng.NewDPRNG(c.seed)
 	fa, fb, err := build(c, &rng)
 	if err != nil {
 		return err
@@ -169,7 +170,7 @@ func runMulti(c config) error {
 // build allocates both fixtures with the same content, in the order the
 // configuration asks for. Whatever is allocated last is also what the caches
 // hold when the measurement starts, and it lands in different memory.
-func build(c config, rng *rtcompare.DPRNG) (a, b *fixture, err error) {
+func build(c config, rng *prng.DPRNG) (a, b *fixture, err error) {
 	if c.workload != "chase" && c.workload != "scan" {
 		return nil, nil, fmt.Errorf("unknown workload %q, want chase or scan", c.workload)
 	}
@@ -206,7 +207,7 @@ func newFixture(n int) *fixture {
 // with a constant, so the content is the same in every process and only the
 // layout differs.
 func layout(n int, workload string) (perm, next []int, probe []int32) {
-	rng := rtcompare.NewDPRNG(1)
+	rng := prng.NewDPRNG(1)
 	perm = make([]int, n)
 	for i := range perm {
 		perm[i] = i

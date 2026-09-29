@@ -3,48 +3,58 @@
 package rtcompare
 
 import (
-	"fmt"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// A relative TimeStamp with the highest possible precision on the current runtime system.
-// The values aren't comparable between computer restarts or between computers.
-// They are only comparable on the same computer between two calls to SampleTime() within the same runtime of a program.
-type TimeStamp = int64
+// timeStamp is a reading of QueryPerformanceCounter, or of the monotonic
+// clock in nanoseconds where that is unavailable. Readings are only
+// comparable within one run of a program.
+type timeStamp = int64
 
 var (
 	modkernel32 = windows.NewLazySystemDLL("kernel32.dll")
 	procFreq    = modkernel32.NewProc("QueryPerformanceFrequency")
 	procCounter = modkernel32.NewProc("QueryPerformanceCounter")
 
+	// qpcFrequency is QueryPerformanceCounter's frequency in ticks per
+	// second, or zero if it could not be read.
 	qpcFrequency = getFrequency()
+
+	// processStart anchors the fallback readings.
+	processStart = time.Now()
 )
 
-// getFrequency returns frequency in ticks per second.
+// getFrequency returns QueryPerformanceCounter's frequency, or zero if the
+// call fails, in which case sampleTime falls back to the monotonic clock of
+// package time rather than failing at package initialisation. The call does
+// not fail on any Windows since XP.
 func getFrequency() int64 {
 	var freq int64
-	r1, _, err := procFreq.Call(uintptr(unsafe.Pointer(&freq)))
-	if r1 == 0 {
-		panic(fmt.Sprintf("call failed: %v", err))
+	if r1, _, _ := procFreq.Call(uintptr(unsafe.Pointer(&freq))); r1 == 0 {
+		return 0
 	}
 	return freq
 }
 
-// SampleTime returns a timestamp with the highest possible precision on the current runtime system.
-func SampleTime() TimeStamp {
+// sampleTime reads the clock with the finest resolution available here.
+func sampleTime() timeStamp {
+	if qpcFrequency == 0 {
+		return int64(time.Since(processStart))
+	}
 	var qpc int64
-	procCounter.Call(uintptr(unsafe.Pointer(&qpc)))
+	_, _, _ = procCounter.Call(uintptr(unsafe.Pointer(&qpc)))
 	return qpc
 }
 
-// DiffTimeStamps returns the difference between two timestamps in nanoseconds with the highest possible precision (which might be more than just one nanosecond).
-// The function assumes that t_later is later than t_earlier and will return a negative value if this is not the case.
-// Please note that the call to this function has constant runtime but contains an integer division operation on Windows.
-func DiffTimeStamps(t_earlier, t_later TimeStamp) int64 {
-	result := t_later - t_earlier
-	result *= int64(1_000_000_000) // ns per sec
-	result /= qpcFrequency
-	return result
+// diffTimeStamps returns the time from earlier to later in nanoseconds,
+// negative if later is in fact earlier. It has constant runtime but
+// contains an integer division.
+func diffTimeStamps(earlier, later timeStamp) int64 {
+	if qpcFrequency == 0 {
+		return later - earlier
+	}
+	return (later - earlier) * 1_000_000_000 / qpcFrequency
 }

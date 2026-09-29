@@ -1,6 +1,7 @@
 package rtcompare
 
 import (
+	"math"
 	"runtime"
 	"sync"
 	"testing"
@@ -11,18 +12,21 @@ import (
 
 func TestSampleTime(t *testing.T) {
 	voidvar := int64(17)
-	t1 := SampleTime()
-	_ = SampleTime()
+	t1 := sampleTime()
+	_ = sampleTime()
 	t1a := time.Now()
 	time.Sleep(3*time.Second + 30*time.Millisecond)
-	t2 := SampleTime() // one sleep, one SampleTime() call, and one time.Now() call in between the two SampleTime() calls
+	t2 := sampleTime() // one sleep, one sampleTime() call, and one time.Now() call in between the two sampleTime() calls
 	voidvar ^= int64(time.Now().UnixNano())
-	t2a := time.Now() // one sleep, one SampleTime() call, and one time.Now() call in between the two time.Now() calls
+	t2a := time.Now() // one sleep, one sampleTime() call, and one time.Now() call in between the two time.Now() calls
 
-	diff := DiffTimeStamps(t1, t2)
+	diff := diffTimeStamps(t1, t2)
 	diffa := t2a.Sub(t1a)
-	aboutEqual := FloatsEqualWithTolerance(float64(diff), float64(diffa), 0.1)                                       // both measurements are in nanoseconds. the values should not differ more than 0.1%
-	assert.True(t, aboutEqual, "values diverge to much: %v vs. %v (ignore:%d)", time.Duration(diff), diffa, voidvar) // use voidvar to avoid compiler omtimization to remove voidvar and the according function calls to calculate it
+	// Both measurements are in nanoseconds and should not differ by more than
+	// 0.1%. voidvar is printed so that the compiler cannot drop the calls that
+	// compute it.
+	aboutEqual := math.Abs(float64(diff)-float64(diffa)) <= 0.001*float64(diffa)
+	assert.True(t, aboutEqual, "values diverge too much: %v vs. %v (ignore:%d)", time.Duration(diff), diffa, voidvar)
 }
 
 func TestCalcMinTimeSample(t *testing.T) {

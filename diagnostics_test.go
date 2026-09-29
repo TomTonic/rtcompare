@@ -1,6 +1,7 @@
 package rtcompare
 
 import (
+	"github.com/TomTonic/rtcompare/prng"
 	"math"
 	"slices"
 	"strings"
@@ -104,7 +105,7 @@ func TestDetectDriftIsCalibratedUnderTies(t *testing.T) {
 	// The false positive rate must hold on quantized data, where most samples
 	// are tied. This is the case timing measurements actually produce.
 	for _, levels := range []int{3, 8, 35} {
-		rng := NewDPRNG(0xABCDEF)
+		rng := prng.NewDPRNG(0xABCDEF)
 		const trials = 3000
 		hits := 0
 		for range trials {
@@ -131,7 +132,7 @@ func TestDetectDriftIsCalibratedUnderTies(t *testing.T) {
 
 func TestDetectDriftHasPower(t *testing.T) {
 	// A 2% trend buried in 4% noise must be found most of the time at n=101.
-	rng := NewDPRNG(12345)
+	rng := prng.NewDPRNG(12345)
 	const trials = 500
 	hits := 0
 	for range trials {
@@ -259,7 +260,7 @@ func TestEstimateDifferencePointEstimate(t *testing.T) {
 func TestEstimateDifferenceDoesNotMutateInputs(t *testing.T) {
 	// QuickMedian rearranges what it is given; the caller's measurements must
 	// survive unchanged.
-	rng := NewDPRNG(31)
+	rng := prng.NewDPRNG(31)
 	a := make([]float64, 40)
 	b := make([]float64, 40)
 	for i := range a {
@@ -280,7 +281,7 @@ func TestEstimateDifferenceDoesNotMutateInputs(t *testing.T) {
 }
 
 func TestEstimateDifferenceIntervalOrderingAndWidth(t *testing.T) {
-	rng := NewDPRNG(77)
+	rng := prng.NewDPRNG(77)
 	a := make([]float64, 60)
 	b := make([]float64, 60)
 	for i := range a {
@@ -306,7 +307,7 @@ func TestEstimateDifferenceIntervalOrderingAndWidth(t *testing.T) {
 
 func TestEstimateDifferenceRecoversAKnownDifference(t *testing.T) {
 	// A 20% reduction, with enough samples that the interval should contain it.
-	rng := NewDPRNG(2468)
+	rng := prng.NewDPRNG(2468)
 	const n = 101
 	a := make([]float64, n)
 	b := make([]float64, n)
@@ -340,7 +341,7 @@ func TestEstimateDifferenceCoverageIsAtLeastNominal(t *testing.T) {
 		n         = 51
 		level     = 0.95
 	)
-	rng := NewDPRNG(0xC0FFEE)
+	rng := prng.NewDPRNG(0xC0FFEE)
 	truth := 1 - 100.0/125.0
 	covered := 0
 	for range trials {

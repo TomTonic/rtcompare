@@ -1,19 +1,10 @@
-package rtcompare
+package prng
 
 import (
 	"fmt"
 	"math"
-	"os"
-	"runtime"
 	"testing"
 )
-
-// helper to skip tests when running in GitHub Actions CI
-func skipIfGHActions(t *testing.T) {
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skip("skipped on GitHub Actions")
-	}
-}
 
 // TestCPRNG_TenMillion calls CPRNG methods twenty million times
 // to ensure there are no panics or errors.
@@ -296,141 +287,7 @@ func TestCPRNG_Uint32N_Uniformity(t *testing.T) {
 	}
 }
 
-// TestCPRNG_BufferSizePerformance compares the per-call time of two CPRNG instances
-// with a very small buffer (16 bytes) and a large buffer (8 KiB). It measures
-// average time per Uint64 call across multiple samples and asserts that the
-// large-buffer CPRNG is faster on average than the small-buffer CPRNG.
-func TestCPRNG_BufferSizePerformance(t *testing.T) {
-	skipIfGHActions(t)
-	const repeats = 71
-	const innerLoops = 300_000
-	const expectedSpeedup = 0.32 // expect large-buffer CPRNG to be at least 32% faster than small-buffer CPRNG. This conservative estimate is required for GitHub Actions CI. On an M1 Pro MacBook the speedup is usually around 25x.
-	const minConfidence = 0.95   // require at least 95% confidence
-
-	small := NewCPRNG(16)
-	large := NewCPRNG(8192)
-
-	timesSmall := make([]float64, 0, repeats)
-	timesLarge := make([]float64, 0, repeats)
-
-	for range repeats {
-		runtime.GC()
-		t1 := SampleTime()
-		for range innerLoops {
-			_ = small.Uint64()
-		}
-		t2 := SampleTime()
-		timesSmall = append(timesSmall, float64(DiffTimeStamps(t1, t2))/float64(innerLoops))
-
-		runtime.GC()
-		t3 := SampleTime()
-		for range innerLoops {
-			_ = large.Uint64()
-		}
-		t4 := SampleTime()
-		timesLarge = append(timesLarge, float64(DiffTimeStamps(t3, t4))/float64(innerLoops))
-	}
-
-	mSmall := QuickMedian(timesSmall)
-	mLarge := QuickMedian(timesLarge)
-	t.Logf("median call (small=%d bytes)=%.1f ns, (large=%d bytes)=%.1f ns", 16, mSmall, 8192, mLarge)
-
-	if !(mLarge < mSmall) {
-		t.Fatalf("expected large-buffer CPRNG to be faster: large=%.1f >= small=%.1f", mLarge, mSmall)
-	}
-
-	speedups := []float64{expectedSpeedup}
-	results, err := CompareSamples(timesLarge, timesSmall, speedups, 10_000)
-	if err != nil {
-		t.Fatalf("CompareSamples failed: %v", err)
-	}
-	if len(results) < 1 {
-		t.Fatalf("expected at least 1 result from CompareSamples, got %d", len(results))
-	}
-	for _, r := range results {
-		t.Logf("Speedup ≥ %.2f%% → Confidence: %.3f%%\n", r.RelativeSpeedupSampleAvsSampleB*100.0, r.Confidence*100.0)
-	}
-	res := results[0]
-	if res.Confidence < minConfidence {
-		t.Fatalf("expected confidence >= %.2f for speedup %.1f, got %.3f", minConfidence, res.RelativeSpeedupSampleAvsSampleB, res.Confidence)
-	}
-
-}
-
 // TestCPRNG_vs_DPRNG_Performance compares the per-call time of a CPRNG instances
 // with a very large buffer (16 KiB) with a DPRNG. It measures
 // average time per Uint64 call across multiple samples and asserts that the
 // DPRNG is faster on average than the large-buffer CPRNG.
-// rngPerfSink keeps the measured generator output observable.
-var rngPerfSink uint64
-
-func TestCPRNG_vs_DPRNG_Performance(t *testing.T) {
-	const cprngBufferSize = 16384
-
-	cprng := NewCPRNG(cprngBufferSize)
-	dprng := NewDPRNG(123456)
-
-	// Both candidates capture one pointer-sized value and accumulate into the
-	// same package-level sink, so neither gets an advantage from how its
-	// closure is shaped.
-	cprngCandidate := Candidate{Name: "CPRNG", Batch: func(n uint64) {
-		var acc uint64
-		for range n {
-			acc ^= cprng.Uint64()
-		}
-		rngPerfSink ^= acc
-	}}
-	dprngCandidate := Candidate{Name: "DPRNG", Batch: func(n uint64) {
-		var acc uint64
-		for range n {
-			acc ^= dprng.Uint64()
-		}
-		rngPerfSink ^= acc
-	}}
-
-	opts := CollectOptions{Repeats: 51, InnerLoops: 20_000, GCBetween: true}
-
-	// Ask what this machine invents on its own before asking what the two
-	// generators differ by. The previous version of this test asserted a
-	// hardcoded 33.333% advantage at 95% confidence, which is a claim about a
-	// particular machine rather than about the code: measured here, DPRNG leads
-	// by about 24%, and the test failed for saying so.
-	validation, err := ValidateHarness(dprngCandidate, ValidationOptions{
-		Collect: opts, Runs: 5, Resamples: 2000,
-	})
-	if err != nil {
-		t.Fatalf("harness validation failed: %v", err)
-	}
-	t.Log("\n" + validation.String())
-
-	timesDprng, timesCprng, err := Collect(dprngCandidate, cprngCandidate, opts)
-	if err != nil {
-		t.Fatalf("Collect failed: %v", err)
-	}
-
-	mDprng, mCprng := Median(timesDprng), Median(timesCprng)
-	observed := 1 - mDprng/mCprng
-	t.Logf("median call: CPRNG with %d bytes = %.2f ns, DPRNG = %.2f ns, DPRNG ahead by %.2f%%",
-		cprngBufferSize, mCprng, mDprng, observed*100)
-
-	if mDprng >= mCprng {
-		t.Fatalf("expected DPRNG to be faster: DPRNG=%.2f >= CPRNG=%.2f", mDprng, mCprng)
-	}
-	if !validation.Resolves(observed) {
-		t.Fatalf("DPRNG leads by %.3f%%, which is inside the %.3f%% this setup produces from identical code; the difference is not resolved",
-			observed*100, validation.NoiseFloor*100)
-	}
-
-	// Require confidence at the largest difference the harness demonstrably
-	// invents on its own. Anything above that floor is a real claim; the exact
-	// magnitude is a property of the machine and not worth pinning.
-	const minConfidence = 0.95
-	results, err := CompareSamples(timesDprng, timesCprng, []float64{validation.NoiseFloor}, 10_000)
-	if err != nil {
-		t.Fatalf("CompareSamples failed: %v", err)
-	}
-	if got := results[0].Confidence; got < minConfidence {
-		t.Fatalf("expected confidence >= %.2f that DPRNG leads by more than the %.3f%% noise floor, got %.3f",
-			minConfidence, validation.NoiseFloor*100, got)
-	}
-}

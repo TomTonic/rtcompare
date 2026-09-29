@@ -1,6 +1,7 @@
 package rtcompare
 
 import (
+	"github.com/TomTonic/rtcompare/prng"
 	"math"
 	"math/rand"
 	"reflect"
@@ -31,7 +32,7 @@ func TestCompareRuntimesDefaultThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if len(results) != 1 || results[0].RelativeSpeedupSampleAvsSampleB != 0.0 {
+	if len(results) != 1 || results[0].Threshold != 0.0 {
 		t.Errorf("Expected default threshold 0.0, got %+v", results)
 	}
 }
@@ -172,8 +173,8 @@ func TestBootstrapConfidenceHighConfidence(t *testing.T) {
 
 	conf := BootstrapConfidence(A, B, thresholds, reps, seed)
 
-	if conf[0.3] < 0.95 {
-		t.Errorf("Expected high confidence for 30%% speedup, got %.2f", conf[0.3])
+	if confAt(conf, 0.3) < 0.95 {
+		t.Errorf("Expected high confidence for 30%% speedup, got %.2f", confAt(conf, 0.3))
 	}
 }
 
@@ -186,8 +187,8 @@ func TestBootstrapConfidenceLowConfidence(t *testing.T) {
 
 	conf := BootstrapConfidence(A, B, thresholds, reps, seed)
 
-	if conf[0.1] > 0.2 {
-		t.Errorf("Expected low confidence for 10%% speedup, got %.2f", conf[0.1])
+	if confAt(conf, 0.1) > 0.2 {
+		t.Errorf("Expected low confidence for 10%% speedup, got %.2f", confAt(conf, 0.1))
 	}
 }
 
@@ -202,7 +203,7 @@ func TestBootstrapConfidenceEmptyInput(t *testing.T) {
 	// With empty inputs the implementation uses NaN medians and comparisons
 	// never succeed, therefore the confidence should be 0.0 for each threshold.
 	for _, th := range thresholds {
-		if v, ok := conf[th]; !ok {
+		if v, ok := conf.At(th); !ok {
 			t.Fatalf("missing threshold %v in result", th)
 		} else if v != 0.0 {
 			t.Fatalf("expected confidence 0.0 for empty input, got %.6f", v)
@@ -225,7 +226,7 @@ func TestBootstrapConfidenceRandomSeed(t *testing.T) {
 }
 
 func TestBootstrapConfidenceRange(t *testing.T) {
-	// Property: Für beliebige Eingaben liegt conf[t] ∈ [0, 1]
+	// Property: Für beliebige Eingaben liegt confAt(conf, t) ∈ [0, 1]
 	prop := func(A, B []float64) bool {
 		if len(A) == 0 || len(B) == 0 {
 			return true // skip invalid input
@@ -238,7 +239,7 @@ func TestBootstrapConfidenceRange(t *testing.T) {
 		conf := BootstrapConfidence(A, B, thresholds, reps, seed)
 
 		for _, threshold := range thresholds {
-			v := conf[threshold]
+			v := confAt(conf, threshold)
 			if v < 0.0 || v > 1.0 || !isFinite(v) {
 				t.Logf("Invalid confidence value: %.4f for threshold %.2f", v, threshold)
 				return false
@@ -280,9 +281,9 @@ func TestBootstrapConfidenceMonotony(t *testing.T) {
 
 	// Prüfe, ob Konfidenz streng monoton fallend ist
 	for i := 1; i < len(thresholds); i++ {
-		if conf[thresholds[i]] > conf[thresholds[i-1]] {
-			t.Errorf("Confidence not decreasing: conf[%.2f]=%.3f > conf[%.2f]=%.3f",
-				thresholds[i], conf[thresholds[i]], thresholds[i-1], conf[thresholds[i-1]])
+		if confAt(conf, thresholds[i]) > confAt(conf, thresholds[i-1]) {
+			t.Errorf("Confidence not decreasing: confAt(conf, %.2f)=%.3f > confAt(conf, %.2f)=%.3f",
+				thresholds[i], confAt(conf, thresholds[i]), thresholds[i-1], confAt(conf, thresholds[i-1]))
 		}
 	}
 }
@@ -295,7 +296,7 @@ func TestBootstrapConfidence_RepsZero(t *testing.T) {
 	conf := BootstrapConfidence(a, b, thresholds, 0, 42)
 
 	for _, th := range thresholds {
-		v, ok := conf[th]
+		v, ok := conf.At(th)
 		if !ok {
 			t.Fatalf("missing threshold %v in result map", th)
 		}
@@ -375,7 +376,7 @@ func TestBootstrapConfidence_EdgeCases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			conf := BootstrapConfidence(tc.A, tc.B, tc.thresholds, tc.reps, 42)
 			for _, th := range tc.thresholds {
-				got, ok := conf[th]
+				got, ok := conf.At(th)
 				if !ok {
 					t.Fatalf("missing threshold %v in result", th)
 				}
@@ -408,13 +409,13 @@ func TestBootstrapConfidence_NegativeRelativeGains_DeterministicIdenticalSamples
 
 	conf := BootstrapConfidence(A, B, thresholds, resamples, seed)
 
-	if got := conf[-0.05]; got != 1.0 {
+	if got := confAt(conf, -0.05); got != 1.0 {
 		t.Fatalf("expected confidence 1.0 for threshold -0.05, got %v", got)
 	}
-	if got := conf[0.0]; got != 0.0 {
+	if got := confAt(conf, 0.0); got != 0.0 {
 		t.Fatalf("expected confidence 0.0 for threshold 0.0, got %v", got)
 	}
-	if got := conf[0.01]; got != 0.0 {
+	if got := confAt(conf, 0.01); got != 0.0 {
 		t.Fatalf("expected confidence 0.0 for threshold 0.01, got %v", got)
 	}
 }
@@ -430,10 +431,10 @@ func TestBootstrapConfidence_NegativeRelativeGains_ZeroDeltaCountsForNegative(t 
 
 	conf := BootstrapConfidence(A, B, thresholds, resamples, seed)
 
-	if got := conf[-0.01]; got != 1.0 {
+	if got := confAt(conf, -0.01); got != 1.0 {
 		t.Fatalf("expected confidence 1.0 for threshold -0.01 when delta==0, got %v", got)
 	}
-	if got := conf[0.0]; got != 1.0 {
+	if got := confAt(conf, 0.0); got != 1.0 {
 		t.Fatalf("expected confidence 1.0 for threshold 0.0 when delta==0, got %v", got)
 	}
 }
@@ -452,13 +453,13 @@ func TestBootstrapConfidence_HighRelativeGains_DeterministicIdenticalSamples(t *
 
 	conf := BootstrapConfidence(A, B, thresholds, resamples, seed)
 
-	if got := conf[0.5]; got != 1.0 {
+	if got := confAt(conf, 0.5); got != 1.0 {
 		t.Fatalf("expected confidence 1.0 for threshold 0.5, got %v", got)
 	}
-	if got := conf[0.6]; got != 1.0 {
+	if got := confAt(conf, 0.6); got != 1.0 {
 		t.Fatalf("expected confidence 1.0 for threshold 0.6, got %v", got)
 	}
-	if got := conf[0.66667]; got != 0.0 {
+	if got := confAt(conf, 0.66667); got != 0.0 {
 		t.Fatalf("expected confidence 0.0 for threshold 0.66667, got %v", got)
 	}
 
@@ -647,9 +648,9 @@ func TestBlockSampleShapeAndContent(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := NewDPRNG(99)
+	rng := prng.NewDPRNG(99)
 	for _, L := range []int{1, 3, 7, 40, 100} {
-		sample := blockSample(xs, L, rng.UInt32N)
+		sample := blockSample(xs, L, rng.Uint32N)
 		if len(sample) != len(xs) {
 			t.Errorf("L=%d: replicate has %d values, want %d", L, len(sample), len(xs))
 		}
@@ -659,7 +660,7 @@ func TestBlockSampleShapeAndContent(t *testing.T) {
 			}
 		}
 	}
-	if got := blockSample(nil, 3, rng.UInt32N); len(got) != 0 {
+	if got := blockSample(nil, 3, rng.Uint32N); len(got) != 0 {
 		t.Errorf("empty input should give an empty replicate, got %v", got)
 	}
 }
@@ -672,12 +673,12 @@ func TestBlockSampleKeepsNeighboursTogether(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := NewDPRNG(7)
+	rng := prng.NewDPRNG(7)
 
 	runsFor := func(L int) float64 {
 		total, consecutive := 0, 0
 		for range 200 {
-			s := blockSample(xs, L, rng.UInt32N)
+			s := blockSample(xs, L, rng.Uint32N)
 			for i := range len(s) - 1 {
 				total++
 				if s[i+1] == s[i]+1 {
@@ -702,7 +703,7 @@ func TestBlockSampleKeepsNeighboursTogether(t *testing.T) {
 func TestBlockBootstrapWithLengthOneMatchesPlain(t *testing.T) {
 	// Block length one is single-observation resampling. The two must agree
 	// exactly, which is what lets them share an implementation.
-	rng := NewDPRNG(2024)
+	rng := prng.NewDPRNG(2024)
 	a := make([]float64, 51)
 	b := make([]float64, 51)
 	for i := range a {
@@ -714,15 +715,15 @@ func TestBlockBootstrapWithLengthOneMatchesPlain(t *testing.T) {
 		plain := BootstrapConfidence(a, b, gains, 2000, seed)
 		blocked := BlockBootstrapConfidence(a, b, gains, 2000, 1, seed)
 		for _, g := range gains {
-			if plain[g] != blocked[g] {
-				t.Errorf("seed %d, threshold %v: plain %v vs block-of-one %v", seed, g, plain[g], blocked[g])
+			if confAt(plain, g) != confAt(blocked, g) {
+				t.Errorf("seed %d, threshold %v: plain %v vs block-of-one %v", seed, g, confAt(plain, g), confAt(blocked, g))
 			}
 		}
 	}
 }
 
 func TestBlockBootstrapZeroLengthUsesAuto(t *testing.T) {
-	rng := NewDPRNG(555)
+	rng := prng.NewDPRNG(555)
 	a := make([]float64, 101)
 	b := make([]float64, 101)
 	for i := range a {
@@ -732,9 +733,9 @@ func TestBlockBootstrapZeroLengthUsesAuto(t *testing.T) {
 	gains := []float64{0.0}
 	auto := BlockBootstrapConfidence(a, b, gains, 3000, 0, 77)
 	explicit := BlockBootstrapConfidence(a, b, gains, 3000, AutoBlockLength(101), 77)
-	if auto[0.0] != explicit[0.0] {
+	if confAt(auto, 0.0) != confAt(explicit, 0.0) {
 		t.Errorf("length zero should equal AutoBlockLength(%d)=%d, got %v vs %v",
-			101, AutoBlockLength(101), auto[0.0], explicit[0.0])
+			101, AutoBlockLength(101), confAt(auto, 0.0), confAt(explicit, 0.0))
 	}
 }
 
@@ -742,17 +743,17 @@ func TestBlockBootstrapAgreesOnSeparatedData(t *testing.T) {
 	// Blocks must not change the answer when there is nothing subtle going on.
 	a, b := sampleAB()
 	res := BlockBootstrapConfidence(a, b, []float64{0.0, 0.4}, 1000, 0, 42)
-	if res[0.0] != 1.0 {
-		t.Errorf("A is always faster, expected confidence 1 at threshold 0, got %v", res[0.0])
+	if confAt(res, 0.0) != 1.0 {
+		t.Errorf("A is always faster, expected confidence 1 at threshold 0, got %v", confAt(res, 0.0))
 	}
-	if res[0.4] != 1.0 {
-		t.Errorf("A is exactly 50%% faster, expected confidence 1 at threshold 0.4, got %v", res[0.4])
+	if confAt(res, 0.4) != 1.0 {
+		t.Errorf("A is exactly 50%% faster, expected confidence 1 at threshold 0.4, got %v", confAt(res, 0.4))
 	}
 }
 
 // ar1Series generates an AR(1) series with the given lag-1 correlation, holding
 // the marginal variance fixed so that only the dependence changes.
-func ar1Series(rng *DPRNG, n int, rho float64) []float64 {
+func ar1Series(rng *prng.DPRNG, n int, rho float64) []float64 {
 	s := make([]float64, n)
 	sd := math.Sqrt(1 - rho*rho)
 	gauss := func() float64 {
@@ -781,16 +782,16 @@ func TestBlockBootstrapImprovesCalibrationUnderDependence(t *testing.T) {
 		rho       = 0.5
 	)
 	rate := func(useBlocks bool) float64 {
-		rng := NewDPRNG(0xCAFE)
+		rng := prng.NewDPRNG(0xCAFE)
 		out := 0
 		for range trials {
 			a := ar1Series(&rng, n, rho)
 			b := ar1Series(&rng, n, rho)
 			var c float64
 			if useBlocks {
-				c = BlockBootstrapConfidence(a, b, []float64{0.0}, resamples, 0, 0)[0.0]
+				c = confAt(BlockBootstrapConfidence(a, b, []float64{0.0}, resamples, 0, 0), 0.0)
 			} else {
-				c = BootstrapConfidence(a, b, []float64{0.0}, resamples, 0)[0.0]
+				c = confAt(BootstrapConfidence(a, b, []float64{0.0}, resamples, 0), 0.0)
 			}
 			if c < 0.05 || c > 0.95 {
 				out++
@@ -817,12 +818,12 @@ func TestBlockBootstrapDoesNoHarmWithoutDependence(t *testing.T) {
 		resamples = 800
 		n         = 101
 	)
-	rng := NewDPRNG(0xFEED)
+	rng := prng.NewDPRNG(0xFEED)
 	out := 0
 	for range trials {
 		a := ar1Series(&rng, n, 0)
 		b := ar1Series(&rng, n, 0)
-		c := BlockBootstrapConfidence(a, b, []float64{0.0}, resamples, 0, 0)[0.0]
+		c := confAt(BlockBootstrapConfidence(a, b, []float64{0.0}, resamples, 0, 0), 0.0)
 		if c < 0.05 || c > 0.95 {
 			out++
 		}
@@ -844,7 +845,7 @@ func TestLag1Autocorrelation(t *testing.T) {
 	}
 	// A strongly dependent series must show it; an alternating one must be
 	// strongly negative.
-	rng := NewDPRNG(4242)
+	rng := prng.NewDPRNG(4242)
 	if got := lag1Autocorrelation(ar1Series(&rng, 4000, 0.7)); got < 0.6 || got > 0.8 {
 		t.Errorf("expected lag-1 near 0.7 for an AR(1) with rho=0.7, got %v", got)
 	}
@@ -865,12 +866,12 @@ func TestBlockSampleClampsToHalfTheInput(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := NewDPRNG(31337)
+	rng := prng.NewDPRNG(31337)
 	for _, L := range []int{20, 40, 100, -5, 0} {
 		identical := 0
 		const draws = 100
 		for range draws {
-			s := blockSample(xs, L, rng.UInt32N)
+			s := blockSample(xs, L, rng.Uint32N)
 			if len(s) != len(xs) {
 				t.Fatalf("L=%d: replicate has %d values, want %d", L, len(s), len(xs))
 			}
@@ -891,14 +892,14 @@ func TestBlockSampleClampsToHalfTheInput(t *testing.T) {
 func TestBlockSampleSurvivesTinyInputs(t *testing.T) {
 	// The clamp must not underflow the start count on inputs too short to hold
 	// two blocks.
-	rng := NewDPRNG(11)
+	rng := prng.NewDPRNG(11)
 	for n := 1; n <= 4; n++ {
 		xs := make([]float64, n)
 		for i := range xs {
 			xs[i] = float64(i)
 		}
 		for _, L := range []int{-1, 0, 1, n, n + 5} {
-			s := blockSample(xs, L, rng.UInt32N)
+			s := blockSample(xs, L, rng.Uint32N)
 			if len(s) != n {
 				t.Errorf("n=%d, L=%d: replicate has %d values, want %d", n, L, len(s), n)
 			}
@@ -915,7 +916,7 @@ func TestBlockBootstrapRejectsDegenerateLengths(t *testing.T) {
 	// Identical distributions, so the confidence must land near 0.5. Before the
 	// clamp, an oversized or negative block length produced exactly 0 or 1,
 	// which reads as certainty.
-	rng := NewDPRNG(12345)
+	rng := prng.NewDPRNG(12345)
 	a := make([]float64, 101)
 	b := make([]float64, 101)
 	for i := range a {
@@ -923,7 +924,7 @@ func TestBlockBootstrapRejectsDegenerateLengths(t *testing.T) {
 		b[i] = 100 + rng.Float64()*10
 	}
 	for _, L := range []int{0, 1, 5, 50, 101, 200, -5} {
-		c := BlockBootstrapConfidence(a, b, []float64{0.0}, 4000, L, 99)[0.0]
+		c := confAt(BlockBootstrapConfidence(a, b, []float64{0.0}, 4000, L, 99), 0.0)
 		if c <= 0.02 || c >= 0.98 {
 			t.Errorf("blockLength %d: confidence %.4f on A/A data is degenerate, expected something near 0.5", L, c)
 		}
@@ -952,7 +953,7 @@ func TestCompareSamplesDuplicateThresholdsKeepConfidenceInRange(t *testing.T) {
 	}
 	for _, r := range res {
 		if r.Confidence < 0 || r.Confidence > 1 {
-			t.Errorf("confidence %v for threshold %v is outside [0,1]", r.Confidence, r.RelativeSpeedupSampleAvsSampleB)
+			t.Errorf("confidence %v for threshold %v is outside [0,1]", r.Confidence, r.Threshold)
 		}
 	}
 }
@@ -1002,8 +1003,8 @@ func TestCompareSamplesResultsAreSortedAndDistinct(t *testing.T) {
 		t.Fatalf("expected %d distinct thresholds, got %d: %+v", len(want), len(res), res)
 	}
 	for i, w := range want {
-		if res[i].RelativeSpeedupSampleAvsSampleB != w {
-			t.Errorf("result %d has threshold %v, want %v", i, res[i].RelativeSpeedupSampleAvsSampleB, w)
+		if res[i].Threshold != w {
+			t.Errorf("result %d has threshold %v, want %v", i, res[i].Threshold, w)
 		}
 	}
 }
@@ -1014,7 +1015,7 @@ func TestBootstrapConfidenceDuplicateThresholds(t *testing.T) {
 	if len(conf) != 1 {
 		t.Errorf("expected one map entry for one distinct threshold, got %d: %v", len(conf), conf)
 	}
-	v, ok := conf[0.2]
+	v, ok := conf.At(0.2)
 	if !ok {
 		t.Fatalf("threshold 0.2 missing from result: %v", conf)
 	}
@@ -1040,7 +1041,7 @@ func TestBootstrapConfidenceZeroResamplesWithDuplicates(t *testing.T) {
 	if len(conf) != 1 {
 		t.Fatalf("expected one map entry, got %d: %v", len(conf), conf)
 	}
-	if v := conf[0.3]; !math.IsNaN(v) {
+	if v := confAt(conf, 0.3); !math.IsNaN(v) {
 		t.Errorf("expected NaN for zero resamples, got %v", v)
 	}
 }
@@ -1141,7 +1142,7 @@ func TestBootstrapSampleCryptoSharesGeneratorStream(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := NewCPRNG(bootstrapCPRNGBufferBytes)
+	rng := prng.NewCPRNG(bootstrapCPRNGBufferBytes)
 
 	first := bootstrapSampleCrypto(xs, rng)
 	identical := 0
@@ -1216,7 +1217,7 @@ func TestCompareSamplesAcceptsInfiniteThresholds(t *testing.T) {
 	if len(res) != 2 {
 		t.Fatalf("expected 2 results, got %d: %+v", len(res), res)
 	}
-	if got := res[0].RelativeSpeedupSampleAvsSampleB; !math.IsInf(got, -1) {
+	if got := res[0].Threshold; !math.IsInf(got, -1) {
 		t.Errorf("expected -Inf first after sorting, got %v", got)
 	}
 	if res[0].Confidence != 1.0 {
@@ -1234,14 +1235,14 @@ func TestBootstrapConfidenceSkipsNaNThresholds(t *testing.T) {
 	if len(conf) != 2 {
 		t.Errorf("expected the NaN threshold to be dropped, leaving 2 entries, got %d: %v", len(conf), conf)
 	}
-	for th := range conf {
-		if math.IsNaN(th) {
-			t.Error("result map contains a NaN key, which no caller could ever look up")
+	for _, c := range conf {
+		if math.IsNaN(c.Threshold) {
+			t.Error("the result contains a NaN threshold, which no caller could ever look up")
 		}
 	}
 	// The surviving thresholds must be unaffected.
 	for _, th := range []float64{0.1, 0.3} {
-		v, ok := conf[th]
+		v, ok := conf.At(th)
 		if !ok {
 			t.Errorf("threshold %v missing from result: %v", th, conf)
 			continue
@@ -1265,10 +1266,10 @@ func TestBootstrapConfidenceKeepsInfiniteThresholds(t *testing.T) {
 	if len(conf) != 2 {
 		t.Fatalf("expected both infinities to survive, got %d entries: %v", len(conf), conf)
 	}
-	if v, ok := conf[math.Inf(-1)]; !ok || v != 1.0 {
+	if v, ok := conf.At(math.Inf(-1)); !ok || v != 1.0 {
 		t.Errorf("expected -Inf -> 1.0 and retrievable, got v=%v ok=%v", v, ok)
 	}
-	if v, ok := conf[math.Inf(1)]; !ok || v != 0.0 {
+	if v, ok := conf.At(math.Inf(1)); !ok || v != 0.0 {
 		t.Errorf("expected +Inf -> 0.0 and retrievable, got v=%v ok=%v", v, ok)
 	}
 }
@@ -1280,7 +1281,7 @@ func TestBootstrapConfidenceNaNZeroResamples(t *testing.T) {
 	if len(conf) != 1 {
 		t.Fatalf("expected one entry, got %d: %v", len(conf), conf)
 	}
-	if v := conf[0.2]; !math.IsNaN(v) {
+	if v := confAt(conf, 0.2); !math.IsNaN(v) {
 		t.Errorf("expected NaN confidence for zero resamples, got %v", v)
 	}
 }
@@ -1307,7 +1308,7 @@ func serialCorrelation(xs []float64) float64 {
 // TestBootstrapSampleDPRNGHasNoSerialCorrelation guards against reintroducing a
 // per-replicate seeding scheme.
 //
-// Seeding a fresh DPRNG per replicate from consecutive seeds used to leave a
+// Seeding a fresh prng.DPRNG per replicate from consecutive seeds used to leave a
 // lag-1 correlation of 0.095 between the first index of consecutive samples,
 // against a noise band of roughly 0.007 at the sample count used in that
 // measurement. Drawing every replicate from one stream removes it.
@@ -1321,7 +1322,7 @@ func TestBootstrapSampleDPRNGHasNoSerialCorrelation(t *testing.T) {
 		xs[i] = float64(i)
 	}
 
-	rng := NewDPRNG(0xDEADBEEF)
+	rng := prng.NewDPRNG(0xDEADBEEF)
 	first := make([]float64, replicates)
 	for i := range replicates {
 		first[i] = bootstrapSampleDPRNG(xs, &rng)[0]
@@ -1345,7 +1346,7 @@ func TestBootstrapConfidenceSeededAdvancesTheStream(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := NewDPRNG(4242)
+	rng := prng.NewDPRNG(4242)
 	prev := bootstrapSampleDPRNG(xs, &rng)
 	repeats := 0
 	for range 500 {
@@ -1366,7 +1367,7 @@ func TestBootstrapConfidenceSeededStillDeterministic(t *testing.T) {
 	// Spread-out data, so that which values a replicate happens to draw actually
 	// moves the median. With constant inputs every replicate yields the same
 	// delta and the seed provably cannot matter.
-	rng := NewDPRNG(7)
+	rng := prng.NewDPRNG(7)
 	a := make([]float64, 41)
 	b := make([]float64, 41)
 	for i := range a {
@@ -1377,11 +1378,49 @@ func TestBootstrapConfidenceSeededStillDeterministic(t *testing.T) {
 	first := BootstrapConfidence(a, b, gains, 500, 99)
 	second := BootstrapConfidence(a, b, gains, 500, 99)
 	for _, g := range gains {
-		if first[g] != second[g] {
-			t.Errorf("same seed gave different confidences for threshold %v: %v vs %v", g, first[g], second[g])
+		if confAt(first, g) != confAt(second, g) {
+			t.Errorf("same seed gave different confidences for threshold %v: %v vs %v", g, confAt(first, g), confAt(second, g))
 		}
 	}
-	if other := BootstrapConfidence(a, b, gains, 500, 100); other[0.1] == first[0.1] && other[0.2] == first[0.2] {
+	if other := BootstrapConfidence(a, b, gains, 500, 100); confAt(other, 0.1) == confAt(first, 0.1) && confAt(other, 0.2) == confAt(first, 0.2) {
 		t.Error("different seeds produced identical results across both thresholds")
+	}
+}
+
+// confAt returns the confidence for threshold t, or NaN if it is missing, for
+// tests that read single entries.
+func confAt(c Confidences, t float64) float64 {
+	if v, ok := c.At(t); ok {
+		return v
+	}
+	return math.NaN()
+}
+
+// TestConfidencesAtFindsComputedThresholds checks how a caller reads one
+// confidence back: by the threshold it asked for, even when that threshold was
+// computed and differs from the stored one in the last bits, but never by a
+// neighbouring threshold or across infinities.
+func TestConfidencesAtFindsComputedThresholds(t *testing.T) {
+	c := Confidences{{math.Inf(-1), 1}, {0.15, 0.7}, {F2T(1.1), 0.4}, {math.Inf(1), 0}}
+	cases := []struct {
+		name      string
+		threshold float64
+		want      float64
+		found     bool
+	}{
+		{"finds a threshold computed differently", 0.1 + 0.05, 0.7, true},
+		{"finds a threshold from F2T", F2T(1.1), 0.4, true},
+		{"finds minus infinity exactly", math.Inf(-1), 1, true},
+		{"finds plus infinity exactly, not minus infinity", math.Inf(1), 0, true},
+		{"does not find a neighbouring threshold", 0.16, 0, false},
+		{"does not find NaN", math.NaN(), 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := c.At(tc.threshold)
+			if ok != tc.found || got != tc.want {
+				t.Errorf("At(%v) = %v, %v; want %v, %v", tc.threshold, got, ok, tc.want, tc.found)
+			}
+		})
 	}
 }

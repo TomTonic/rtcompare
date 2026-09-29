@@ -2,6 +2,7 @@ package rtcompare
 
 import (
 	"fmt"
+	"github.com/TomTonic/rtcompare/prng"
 	"math"
 	"runtime/debug"
 	"strings"
@@ -301,7 +302,7 @@ func TestCollectSetupWorkIsNotMeasured(t *testing.T) {
 	// A candidate whose Setup burns time while its Batch does nothing must not
 	// have that time attributed to it.
 	burn := func() {
-		rng := NewDPRNG(0x99)
+		rng := prng.NewDPRNG(0x99)
 		var acc uint64
 		for range 200_000 {
 			acc ^= rng.Uint64()
@@ -364,7 +365,7 @@ func TestCollectDisableGCIsOffDuringRun(t *testing.T) {
 func TestCollectProducesUsableSamples(t *testing.T) {
 	work := func(mult uint64) Candidate {
 		return Candidate{Batch: func(n uint64) {
-			rng := NewDPRNG(0x12345)
+			rng := prng.NewDPRNG(0x12345)
 			var acc uint64
 			for range n * mult {
 				acc ^= rng.Uint64()
@@ -395,7 +396,7 @@ func TestCollectProducesUsableSamples(t *testing.T) {
 	}
 
 	// The samples must be directly consumable by the comparison API.
-	if _, err := CompareSamplesDefault(sa, sb, []float64{0.0, 0.5}); err != nil {
+	if _, err := CompareSamples(sa, sb, []float64{0.0, 0.5}, 0); err != nil {
 		t.Errorf("Collect output rejected by CompareSamplesDefault: %v", err)
 	}
 }
@@ -505,7 +506,7 @@ func spinCandidate(cost uint64) Candidate {
 	return Candidate{
 		Name: "spin",
 		Batch: func(n uint64) {
-			rng := NewDPRNG(0x12345)
+			rng := prng.NewDPRNG(0x12345)
 			var acc uint64
 			for range n * cost {
 				acc ^= rng.Uint64()
@@ -615,7 +616,7 @@ func TestCalibrateSurvivesUnusedResult(t *testing.T) {
 	// normally rather than trip the "batch does not scale" error. This guards
 	// the claim made in the CalibrateInnerLoops documentation.
 	discarding := Candidate{Name: "discarding", Batch: func(n uint64) {
-		rng := NewDPRNG(0x1)
+		rng := prng.NewDPRNG(0x1)
 		var acc uint64
 		for range n {
 			acc ^= rng.Uint64()
@@ -716,7 +717,7 @@ func TestCollectUsesTheLargerCalibratedBatch(t *testing.T) {
 	var seenA, seenB uint64
 	cheap := Candidate{Name: "cheap", Batch: func(n uint64) {
 		seenA = n
-		rng := NewDPRNG(0x1)
+		rng := prng.NewDPRNG(0x1)
 		var acc uint64
 		for range n {
 			acc ^= rng.Uint64()
@@ -725,7 +726,7 @@ func TestCollectUsesTheLargerCalibratedBatch(t *testing.T) {
 	}}
 	expensive := Candidate{Name: "expensive", Batch: func(n uint64) {
 		seenB = n
-		rng := NewDPRNG(0x1)
+		rng := prng.NewDPRNG(0x1)
 		var acc uint64
 		for range n * 100 {
 			acc ^= rng.Uint64()

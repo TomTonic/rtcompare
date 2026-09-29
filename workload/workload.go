@@ -55,7 +55,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/TomTonic/rtcompare"
+	"github.com/TomTonic/rtcompare/prng"
 )
 
 // Kind is what an [Op] does.
@@ -328,7 +328,7 @@ func (c Config) resolve(target int, minRatio float64) (Config, int, error) {
 }
 
 // shuffledIDs returns 0 to n-1 in random order, by Fisher-Yates.
-func shuffledIDs(n int, rng *rtcompare.DPRNG) []uint32 {
+func shuffledIDs(n int, rng *prng.DPRNG) []uint32 {
 	ids := make([]uint32, n)
 	for i := range ids {
 		ids[i] = uint32(i)

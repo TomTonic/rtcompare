@@ -333,7 +333,7 @@ func (e Estimate) String() string {
 //	e, err := rtcompare.EstimateDifference(r.SamplesA, r.SamplesB, rtcompare.EstimateOptions{
 //		Level: r.Estimate.Level, Resamples: r.Estimate.Resamples, BlockLength: r.BlockLength, Seed: r.Seed})
 func EstimateDifference(A, B []float64, opt EstimateOptions) (Estimate, error) {
-	if uint64(len(A)) < MinimumDataPoints || uint64(len(B)) < MinimumDataPoints {
+	if len(A) < MinimumDataPoints || len(B) < MinimumDataPoints {
 		return Estimate{}, fmt.Errorf("not enough data points: need at least %d measurements for each input", MinimumDataPoints)
 	}
 	level, resamples := opt.Level, opt.Resamples
@@ -348,16 +348,16 @@ func EstimateDifference(A, B []float64, opt EstimateOptions) (Estimate, error) {
 	}
 	blockLength := max(1, opt.BlockLength)
 
-	// QuickMedian rearranges what it is given, so the point estimate works on
+	// quickMedian rearranges what it is given, so the point estimate works on
 	// copies and leaves the caller's measurements alone.
-	pointA := QuickMedian(slices.Clone(A))
-	pointB := QuickMedian(slices.Clone(B))
+	pointA := quickMedian(slices.Clone(A))
+	pointB := quickMedian(slices.Clone(B))
 
 	deltas := make([]float64, 0, resamples)
 	next := bootstrapStream(opt.Seed)
 	for range resamples {
-		medA := QuickMedian(blockSample(A, blockLength, next))
-		medB := QuickMedian(blockSample(B, blockLength, next))
+		medA := quickMedian(blockSample(A, blockLength, next))
+		medB := quickMedian(blockSample(B, blockLength, next))
 		if d := relativeDelta(medA, medB); !math.IsNaN(d) {
 			deltas = append(deltas, d)
 		}

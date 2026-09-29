@@ -7,6 +7,8 @@ package rtcompare
 import (
 	"runtime"
 	"sync/atomic"
+
+	"github.com/TomTonic/rtcompare/prng"
 )
 
 // Spacers holds the allocations [PerturbHeap] made. Its only purpose is to stay
@@ -80,7 +82,7 @@ const perturbLargeMax = 16 << 20
 // with and without pointers, plus a large block of up to 16 MB whose pages are
 // mostly never touched, and about a millisecond.
 func PerturbHeap(seed uint64) *Spacers {
-	rng := NewDPRNG(mixSeed(seed))
+	rng := prng.NewDPRNG(seed)
 	sizes := smallSizes()
 	rng.Shuffle(len(sizes), func(i, j int) { sizes[i], sizes[j] = sizes[j], sizes[i] })
 
@@ -124,10 +126,9 @@ func smallSizes() []int {
 	return append(sizes, largest)
 }
 
-// mixSeed spreads a seed over all 64 bits with one round of splitmix64, so that
-// small seeds such as a process index do not start the xorshift generator in a
-// low-entropy state, and so that zero stays a fixed seed instead of the request
-// for a random one that NewDPRNG takes it to be.
+// mixSeed spreads a seed over all 64 bits with one round of splitmix64, for
+// deriving one seed from another, and never returns zero, which the bootstrap
+// takes to mean cryptographic randomness.
 func mixSeed(seed uint64) uint64 {
 	z := seed + 0x9E3779B97F4A7C15
 	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9

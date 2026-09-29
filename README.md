@@ -132,7 +132,7 @@ Not sure what a warning like "resampled in blocks" or "does not clear the noise 
 
 - **Dependence between neighbouring measurements.** Resampling single observations also assumes they are exchangeable, and real measurements are mildly correlated. In AR(1) simulations the rate of false signals from identical inputs stayed at its nominal 10% up to a lag-1 correlation of 0.08, reached 13.5% at 0.2 and 21.7% at 0.4. `ValidateHarness` reports the correlation it observed; above roughly 0.2, `BlockBootstrapConfidence` resamples contiguous blocks instead.
 
-- **Deterministic input generation.** DPRNG generates reproducible inputs across runs. CPRNG, backed by [crypto/rand](https://pkg.go.dev/crypto/rand), is there when unpredictability or cryptographic quality is wanted instead.
+- **Deterministic input generation.** `prng.DPRNG` generates reproducible inputs across runs. `prng.CPRNG`, backed by [crypto/rand](https://pkg.go.dev/crypto/rand), is there when unpredictability or cryptographic quality is wanted instead.
 
 ## When to use rtcompare instead of `testing.B`
 
@@ -160,9 +160,9 @@ Measuring:
 
 Judging:
 
-- `CompareSamples(a, b, relativeGains, resamples)` — confidence per requested relative speedup. `CompareSamplesDefault` uses `DefaultResamples`.
-- `EstimateDifference(a, b, level, resamples)` — the point estimate of the relative difference with a bootstrap interval around it. `Excludes(0)` asks whether a difference has been established at all.
-- `BootstrapConfidence` — the same, returning a map, with control over the PRNG seed.
+- `CompareSamples(a, b, relativeGains, resamples)` — confidence per requested relative speedup, as `Confidences`, a list sorted by threshold whose `At(threshold)` looks one up. Zero resamples select `DefaultResamples`.
+- `EstimateDifference(a, b, EstimateOptions)` — the point estimate of the relative difference with a bootstrap interval around it, and with a `Seed` reproducibly. `Excludes(0)` asks whether a difference has been established at all, and `Ratio()` gives the factor B/A.
+- `BootstrapConfidence` — the confidences of `CompareSamples`, with control over the PRNG seed.
 - `BlockBootstrapConfidence` — resamples contiguous blocks, for measurements correlated with their neighbours.
 - `F2T(timesFaster)` — converts a multiplicative speedup to the relative threshold the API uses. It signals invalid input by returning NaN, which `CompareSamples` rejects with an error rather than silently answering.
 
@@ -182,9 +182,9 @@ Across processes:
 
 Primitives:
 
-- `DPRNG` / `CPRNG` — deterministic and cryptographic generators with `Uint64`, `Float64` and `Uint32N`. `DPRNG.Shuffle` permutes, e.g. the order in which fixtures are built.
-- `SampleTime()` / `DiffTimeStamps()` — high-resolution timestamps, and `GetSampleTimePrecision()` for the smallest interval they can resolve here.
-- `Median` / `QuickMedian` / `Statistics` — small statistics helpers.
+- `prng.DPRNG` / `prng.CPRNG` (package `github.com/TomTonic/rtcompare/prng`) — deterministic and cryptographic generators with `Uint64`, `Float64` and `Uint32N`. `prng.NewDPRNG(seed)` gives every seed, zero included, its own fixed sequence. `DPRNG.Shuffle` permutes, e.g. the order in which fixtures are built.
+- `GetSampleTimePrecision()` — the smallest interval the clock resolves here.
+- `Median` — the median, the mean of the two middle values for an even count.
 
 Workloads for mutable data structures (`github.com/TomTonic/rtcompare/workload`):
 

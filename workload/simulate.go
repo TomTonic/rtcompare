@@ -1,6 +1,6 @@
 package workload
 
-import "github.com/TomTonic/rtcompare"
+import "github.com/TomTonic/rtcompare/prng"
 
 // simulation produces a stream by playing it out: it tracks which transient
 // elements are present at every point, so that a deletion can only name one
@@ -8,7 +8,7 @@ import "github.com/TomTonic/rtcompare"
 // streams valid by construction.
 type simulation struct {
 	c   Config
-	rng rtcompare.DPRNG
+	rng prng.DPRNG
 	ops []Op
 
 	// permanent holds the elements to be inserted that remain at the end,
@@ -29,7 +29,7 @@ type simulation struct {
 func newSimulation(c Config, target, transients int) *simulation {
 	return &simulation{
 		c:              c,
-		rng:            rtcompare.NewDPRNG(mixSeed(c.Seed)),
+		rng:            prng.NewDPRNG(c.Seed),
 		nextTransient:  uint32(target),
 		transientsLeft: transients,
 		live:           liveSet{policy: c.Victims},
@@ -120,7 +120,7 @@ func (l *liveSet) len() int { return len(l.ids) - l.head }
 func (l *liveSet) add(id uint32) { l.ids = append(l.ids, id) }
 
 // remove takes out the element the policy selects and returns it.
-func (l *liveSet) remove(rng *rtcompare.DPRNG) uint32 {
+func (l *liveSet) remove(rng *prng.DPRNG) uint32 {
 	switch l.policy {
 	case FIFO:
 		id := l.ids[l.head]
@@ -147,10 +147,8 @@ func (l *liveSet) remove(rng *rtcompare.DPRNG) uint32 {
 	}
 }
 
-// mixSeed spreads a seed over all 64 bits with one round of splitmix64, so
-// that small seeds do not start the generator in a low-entropy state and so
-// that zero stays a fixed seed, which rtcompare.NewDPRNG would otherwise take
-// as a request for a random one.
+// mixSeed spreads a seed over all 64 bits with one round of splitmix64, for
+// deriving the key permutation's seed from the stream's.
 func mixSeed(seed uint64) uint64 {
 	z := seed + 0x9E3779B97F4A7C15
 	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9

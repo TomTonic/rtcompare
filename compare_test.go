@@ -227,19 +227,19 @@ func TestCompareReportsThresholdConfidences(t *testing.T) {
 		t.Fatalf("expected a confidence per threshold, got %v", r.Confidence)
 	}
 	// A is 50% faster, so easy thresholds are near certain and 90% is hopeless.
-	if r.Confidence[0.2] < 0.95 {
-		t.Errorf("confidence at 20%% should be near 1 for a 50%% difference, got %v", r.Confidence[0.2])
+	if confAt(r.Confidence, 0.2) < 0.95 {
+		t.Errorf("confidence at 20%% should be near 1 for a 50%% difference, got %v", confAt(r.Confidence, 0.2))
 	}
-	if r.Confidence[0.9] > 0.05 {
-		t.Errorf("confidence at 90%% should be near 0 for a 50%% difference, got %v", r.Confidence[0.9])
+	if confAt(r.Confidence, 0.9) > 0.05 {
+		t.Errorf("confidence at 90%% should be near 0 for a 50%% difference, got %v", confAt(r.Confidence, 0.9))
 	}
 	// Confidence must not increase with a harder threshold.
 	previous := 1.1
 	for _, tr := range []float64{0.0, 0.2, 0.45, 0.9} {
-		if r.Confidence[tr] > previous {
-			t.Errorf("confidence rose from %v to %v at a harder threshold %v", previous, r.Confidence[tr], tr)
+		if confAt(r.Confidence, tr) > previous {
+			t.Errorf("confidence rose from %v to %v at a harder threshold %v", previous, confAt(r.Confidence, tr), tr)
 		}
-		previous = r.Confidence[tr]
+		previous = confAt(r.Confidence, tr)
 	}
 	if r.Confidence == nil {
 		t.Error("thresholds were requested, so Confidence must not be nil")
@@ -339,7 +339,7 @@ func TestReportString(t *testing.T) {
 		NoiseFloor: 0.01, Autocorrelation: 0.35, BlockLength: 5,
 		Resolved:   true,
 		Warnings:   []string{"something was off"},
-		Confidence: map[float64]float64{0.2: 0.99, 0.0: 1.0},
+		Confidence: Confidences{{Threshold: 0, Confidence: 1.0}, {Threshold: 0.2, Confidence: 0.99}},
 	}
 	s := r.String()
 	for _, want := range []string{"per op", "difference", "noise floor", "blocks of 5", "resolved: A is faster", "warning: something was off", "confidence"} {
@@ -359,22 +359,6 @@ func TestReportString(t *testing.T) {
 	slower := Report{Estimate: Estimate{Delta: -0.5}, Resolved: true, Validated: true, BlockLength: 1}
 	if s := slower.String(); !strings.Contains(s, "A is slower") || strings.Contains(s, "A is faster") {
 		t.Errorf("a negative difference should read as A being slower:\n%s", s)
-	}
-}
-
-func TestSortedKeys(t *testing.T) {
-	if got := sortedKeys(nil); got != nil {
-		t.Errorf("an empty map has no keys, got %v", got)
-	}
-	got := sortedKeys(map[float64]float64{0.3: 1, -0.1: 1, 0.0: 1})
-	want := []float64{-0.1, 0.0, 0.3}
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("got %v, want %v", got, want)
-		}
 	}
 }
 
@@ -662,12 +646,12 @@ func TestCompareIsReproducibleFromItsSeed(t *testing.T) {
 	}
 	c := BlockBootstrapConfidence(r.SamplesA, r.SamplesB, opt.Thresholds, r.Estimate.Resamples, r.BlockLength, r.Seed)
 	for _, th := range opt.Thresholds {
-		if c[th] != r.Confidence[th] {
-			t.Errorf("recomputed confidence at %v: %v, want %v", th, c[th], r.Confidence[th])
+		if confAt(c, th) != confAt(r.Confidence, th) {
+			t.Errorf("recomputed confidence at %v: %v, want %v", th, confAt(c, th), confAt(r.Confidence, th))
 		}
 	}
-	if c[0] == 0 || c[0] == 1 {
-		t.Logf("confidence %v does not depend on the replicates; the check above is weak this time", c[0])
+	if confAt(c, 0) == 0 || confAt(c, 0) == 1 {
+		t.Logf("confidence %v does not depend on the replicates; the check above is weak this time", confAt(c, 0))
 	}
 	if r.ValidationA.Level != 0.9 || r.ValidationB.Level != 0.9 {
 		t.Errorf("validated at levels %v and %v, want the comparison's 0.9", r.ValidationA.Level, r.ValidationB.Level)

@@ -1,4 +1,4 @@
-package rtcompare
+package prng
 
 import (
 	"crypto/rand"
@@ -31,21 +31,23 @@ func NewCPRNG(capBytes uint32) *CPRNG {
 		capBytes = 8 // minimum buffer size to hold at least one uint64
 	}
 	b := &CPRNG{buf: make([]byte, capBytes)}
-	if _, err := rand.Read(b.buf); err != nil {
-		panic(err)
-	}
-	b.bufPos = 0
+	b.fill()
 	return b
 }
 
 // ensure that n bytes are available, otherwise refill the buffer
 func (c *CPRNG) ensure(n int) {
 	if c.bufPos+uint32(n) > uint32(len(c.buf)) {
-		if _, err := rand.Read(c.buf); err != nil {
-			panic(err)
-		}
-		c.bufPos = 0
+		c.fill()
 	}
+}
+
+// fill refills the buffer from crypto/rand. Since Go 1.24, rand.Read never
+// returns an error: if the operating system's source fails, the program is
+// terminated irrecoverably instead. So there is no error to handle here.
+func (c *CPRNG) fill() {
+	_, _ = rand.Read(c.buf)
+	c.bufPos = 0
 }
 
 // Uint64 returns a uniformly distributed uint64.

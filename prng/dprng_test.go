@@ -1,0 +1,156 @@
+package prng
+
+import (
+	"fmt"
+	"math"
+	"testing"
+
+	set3 "github.com/TomTonic/Set3"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestPrngSeqLength(t *testing.T) {
+	state := NewDPRNG(0x1234567890ABCDEF)
+	limit := uint32(30_000_000)
+	set := set3.EmptyWithCapacity[uint64](limit * 7 / 5)
+	counter := uint32(0)
+	for set.Size() < limit {
+		set.Add(state.Uint64())
+		counter++
+	}
+	assert.True(t, counter == limit, "sequence < limit")
+}
+
+func TestPrngDeterminism(t *testing.T) {
+	state1 := NewDPRNG(0x1234567890ABCDEF)
+	state2 := NewDPRNG(0x1234567890ABCDEF) // create two differnet instances with the same seed
+	limit := 30_000_000
+	for i := range limit {
+		v1 := state1.Uint64()
+		v2 := state2.Uint64()
+		assert.True(t, v1 == v2, "out of sync: values not equal in round %d", i)
+	}
+	_ = state2.Uint64() // skip one value to get both prng out of sync
+	for i := range limit {
+		v1 := state1.Uint64()
+		v2 := state2.Uint64()
+		assert.False(t, v1 == v2, "in: values equal in round %d", i)
+	}
+	_ = state1.Uint64() // get both prng back in sync
+	for i := range limit {
+		v1 := state1.Uint64()
+		v2 := state2.Uint64()
+		assert.True(t, v1 == v2, "out of sync: values not equal in round %d", i)
+	}
+}
+
+func TestFloat64Range(t *testing.T) {
+	rng := NewDPRNG(0x1234567890ABCDEF)
+	for range 100_000 {
+		x := rng.Float64()
+		if x < 0.0 || x >= 1.0 || math.IsNaN(x) || math.IsInf(x, 0) {
+			t.Errorf("Float64 out of range: %f", x)
+		}
+	}
+}
+
+func TestFloat64Determinism(t *testing.T) {
+	rng1 := NewDPRNG(0x1234567890ABCDEF)
+	rng2 := NewDPRNG(0x1234567890ABCDEF)
+
+	for i := range 1000 {
+		x1 := rng1.Float64()
+		x2 := rng2.Float64()
+		if x1 != x2 {
+			t.Errorf("Mismatch at iteration %d: %f vs %f", i, x1, x2)
+		}
+	}
+}
+
+func TestFloat64Distribution(t *testing.T) {
+	rng := NewDPRNG(0x1234567890ABCDEF)
+	N := 1_000_000
+	var sum float64
+	for range N {
+		sum += rng.Float64()
+	}
+	mean := sum / float64(N)
+	if math.Abs(mean-0.5) > 0.01 {
+		t.Errorf("Mean too far from 0.5: got %.5f", mean)
+	}
+}
+
+func TestFloat64Precision(t *testing.T) {
+	rng := NewDPRNG(0x1234567890ABCDEF)
+	seen := make(map[float64]bool)
+	for range 100000 {
+		x := rng.Float64()
+		if seen[x] {
+			t.Errorf("Duplicate value detected: %f", x)
+			break
+		}
+		seen[x] = true
+	}
+}
+
+// TestUInt32N_Frequencies draws 1_000_000 samples for several n values and
+// checks that each bucket's observed frequency is within 3% relative error of 1/n.
+func TestUInt32N_Frequencies(t *testing.T) {
+	cases := []uint32{13, 64, 100}
+	const samples = 10_000_000
+	const maxRel = 0.01 // 1%
+
+	for _, n := range cases {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			seed := uint64(0xDEADBEEFCAFEBABE)
+			rng := NewDPRNG(seed)
+			counts := make([]uint32, n)
+			for range samples {
+				v := rng.Uint32N(n)
+				counts[int(v)]++
+			}
+
+			expected := float64(samples) / float64(n)
+			for i := 0; i < int(n); i++ {
+				obs := float64(counts[i])
+				rel := math.Abs(obs-expected) / expected
+				if rel > maxRel {
+					t.Fatalf("n=%d bucket %d relative deviation too large: %.4f > %.4f (obs=%d expected=%.2f)", n, i, rel, maxRel, counts[i], expected)
+				}
+			}
+		})
+	}
+}
+
+// TestNewDPRNGIsDeterministicForEverySeed checks what reproducible inputs rely
+// on: every seed, zero included, gives its own fixed sequence, two generators
+// from one seed agree, and neighbouring seeds such as process indices start
+// unrelated sequences rather than the same one shifted.
+func TestNewDPRNGIsDeterministicForEverySeed(t *testing.T) {
+	for _, seed := range []uint64{0, 1, 2, 42, math.MaxUint64} {
+		t.Run(fmt.Sprintf("repeats the sequence of seed %d", seed), func(t *testing.T) {
+			a, b := NewDPRNG(seed), NewDPRNG(seed)
+			distinct := map[uint64]bool{}
+			for range 1000 {
+				x := a.Uint64()
+				if x != b.Uint64() {
+					t.Fatal("two generators from the same seed diverged")
+				}
+				distinct[x] = true
+			}
+			if len(distinct) < 1000 {
+				t.Errorf("only %d distinct values in 1000 draws", len(distinct))
+			}
+		})
+	}
+	one, two := NewDPRNG(1), NewDPRNG(2)
+	near := 0
+	for range 64 {
+		if x, y := one.Uint64(), two.Uint64(); x^y < 1<<48 {
+			near++
+		}
+	}
+	if near > 0 {
+		t.Errorf("seeds 1 and 2 gave nearly equal values %d times in 64 draws", near)
+	}
+}
