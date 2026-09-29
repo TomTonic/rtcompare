@@ -80,6 +80,14 @@ type CompareOptions struct {
 	// Resamples is the bootstrap resample count. Zero selects
 	// [DefaultResamples].
 	Resamples uint64
+
+	// Seed makes the resampling reproducible: the interval, the confidences
+	// and the validations' bootstraps are all drawn from it. Zero draws a
+	// random seed. Either way Report.Seed records the seed used, so that a
+	// report's figures can be recomputed from its samples; see
+	// [EstimateDifference]. It does not make the measurements themselves
+	// repeatable, which no seed can.
+	Seed uint64
 }
 
 // Report is everything [Compare] found, with Resolved and Warnings as the short
@@ -127,6 +135,12 @@ type Report struct {
 	// BlockLength is the resampling block length that was used. One means the
 	// samples were treated as independent, which is the ordinary bootstrap.
 	BlockLength int
+
+	// Seed is the seed the resampling was drawn from, CompareOptions.Seed or
+	// the random one drawn in its place. With SamplesA, SamplesB and
+	// BlockLength it reproduces Estimate through [EstimateDifference] and
+	// Confidence through [BlockBootstrapConfidence] exactly.
+	Seed uint64
 
 	// DriftA and DriftB test each series for a trend across the run. A zero N
 	// means the test could not be run.
@@ -307,6 +321,9 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 	if opt.Level == 0 {
 		opt.Level = DefaultConfidenceLevel
 	}
+	if opt.Seed == 0 {
+		opt.Seed = randomSeed()
+	}
 
 	co := opt.Collect
 
@@ -326,12 +343,16 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 		}
 	}
 
-	r := Report{BlockLength: 1}
+	r := Report{BlockLength: 1, Seed: opt.Seed}
 
 	if !opt.SkipValidation {
 		// Together rather than one after the other: a candidate validated on
-		// its own would enter the measurement with the caches to itself.
-		vo := ValidationOptions{Collect: co, Runs: opt.ValidationRuns, Resamples: opt.Resamples}
+		// its own would enter the measurement with the caches to itself. At
+		// the comparison's level, so that its false signals are judged by the
+		// same standard as the comparison, and from a seed of its own derived
+		// from the comparison's.
+		vo := ValidationOptions{Collect: co, Runs: opt.ValidationRuns, Resamples: opt.Resamples,
+			Level: opt.Level, Seed: mixSeed(opt.Seed ^ 0x76616c6964617465)}
 		va, vb, err := ValidatePair(a, b, vo)
 		if err != nil {
 			return Report{}, fmt.Errorf("validating candidates %s and %s: %w", a.label("A"), b.label("B"), err)
@@ -369,14 +390,16 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 		r.BlockLength = AutoBlockLength(min(len(sa), len(sb)))
 	}
 
-	est, err := estimateDifference(sa, sb, opt.Level, opt.Resamples, r.BlockLength)
+	est, err := EstimateDifference(sa, sb, EstimateOptions{Level: opt.Level, Resamples: opt.Resamples, BlockLength: r.BlockLength, Seed: opt.Seed})
 	if err != nil {
 		return Report{}, err
 	}
 	r.Estimate = est
 
+	// The same seed and block length as the interval, so that each confidence
+	// is the share of the very replicates the interval was read from.
 	if len(opt.Thresholds) > 0 {
-		r.Confidence = bootstrapConfidence(sa, sb, opt.Thresholds, opt.Resamples, r.BlockLength, 0)
+		r.Confidence = bootstrapConfidence(sa, sb, opt.Thresholds, opt.Resamples, r.BlockLength, opt.Seed)
 	}
 
 	// Both bars have to be cleared: the difference must be distinguishable from
@@ -387,6 +410,12 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 	r.LiveHeap = liveHeap()
 	r.Warnings = r.warnings()
 	return r, nil
+}
+
+// randomSeed draws a non-zero seed from cryptographic randomness, for a
+// comparison that was given none, so that the one it used can be recorded.
+func randomSeed() uint64 {
+	return NewCPRNG(8).Uint64() | 1
 }
 
 // suspendedSince returns how much further the wall clock has moved than the

@@ -139,10 +139,8 @@ func (o Order) String() string {
 // when CollectOptions.Repeats is left at zero.
 //
 // It is comfortably above [MinimumDataPoints], so that the bootstrap has enough
-// distinct values to resample from, and it is odd, so that [Median] returns the
-// true middle sample. That package's Median never interpolates; for an even
-// count it returns the upper of the two middle values, which biases it slightly
-// upwards. An odd count avoids the question.
+// distinct values to resample from, and it is odd, so that the median is one
+// of the measured values rather than the mean of the two in the middle.
 //
 // Note that raising this does not make a coarse measurement finer. More repeats
 // draw more values from the same quantized set; only a longer batch adds

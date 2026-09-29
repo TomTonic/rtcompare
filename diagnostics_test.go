@@ -210,14 +210,14 @@ func TestEstimateDifferenceRejectsBadInput(t *testing.T) {
 	a, b := sampleAB()
 	short := make([]float64, MinimumDataPoints-1)
 
-	if _, err := EstimateDifference(short, b, 0.95, 100); err == nil {
+	if _, err := EstimateDifference(short, b, EstimateOptions{Level: 0.95, Resamples: 100}); err == nil {
 		t.Error("expected an error for too few samples in A")
 	}
-	if _, err := EstimateDifference(a, short, 0.95, 100); err == nil {
+	if _, err := EstimateDifference(a, short, EstimateOptions{Level: 0.95, Resamples: 100}); err == nil {
 		t.Error("expected an error for too few samples in B")
 	}
 	for _, level := range []float64{-0.1, 1.0, 1.5, math.NaN()} {
-		if _, err := EstimateDifference(a, b, level, 100); err == nil {
+		if _, err := EstimateDifference(a, b, EstimateOptions{Level: level, Resamples: 100}); err == nil {
 			t.Errorf("expected an error for level %v", level)
 		}
 	}
@@ -225,7 +225,7 @@ func TestEstimateDifferenceRejectsBadInput(t *testing.T) {
 
 func TestEstimateDifferenceDefaults(t *testing.T) {
 	a, b := sampleAB()
-	e, err := EstimateDifference(a, b, 0, 0)
+	e, err := EstimateDifference(a, b, EstimateOptions{Level: 0, Resamples: 0})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestEstimateDifferencePointEstimate(t *testing.T) {
 	// A constant 10 against a constant 20 is exactly a 50% reduction, and every
 	// replicate agrees, so the interval collapses onto it.
 	a, b := sampleAB()
-	e, err := EstimateDifference(a, b, 0.95, 500)
+	e, err := EstimateDifference(a, b, EstimateOptions{Level: 0.95, Resamples: 500})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestEstimateDifferenceDoesNotMutateInputs(t *testing.T) {
 	}
 	origA, origB := slices.Clone(a), slices.Clone(b)
 
-	if _, err := EstimateDifference(a, b, 0.95, 300); err != nil {
+	if _, err := EstimateDifference(a, b, EstimateOptions{Level: 0.95, Resamples: 300}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !slices.Equal(a, origA) {
@@ -289,7 +289,7 @@ func TestEstimateDifferenceIntervalOrderingAndWidth(t *testing.T) {
 	}
 	var previousWidth float64
 	for _, level := range []float64{0.50, 0.80, 0.95, 0.99} {
-		e, err := EstimateDifference(a, b, level, 4000)
+		e, err := EstimateDifference(a, b, EstimateOptions{Level: level, Resamples: 4000})
 		if err != nil {
 			t.Fatalf("level %v: unexpected error: %v", level, err)
 		}
@@ -314,7 +314,7 @@ func TestEstimateDifferenceRecoversAKnownDifference(t *testing.T) {
 		a[i] = 100 * (1 + 0.05*(rng.Float64()-0.5))
 		b[i] = 125 * (1 + 0.05*(rng.Float64()-0.5))
 	}
-	e, err := EstimateDifference(a, b, 0.95, 4000)
+	e, err := EstimateDifference(a, b, EstimateOptions{Level: 0.95, Resamples: 4000})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestEstimateDifferenceCoverageIsAtLeastNominal(t *testing.T) {
 			a[i] = 100 * (1 + 0.16*(rng.Float64()-0.5))
 			b[i] = 125 * (1 + 0.16*(rng.Float64()-0.5))
 		}
-		e, err := EstimateDifference(a, b, level, resamples)
+		e, err := EstimateDifference(a, b, EstimateOptions{Level: level, Resamples: resamples})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -443,5 +443,50 @@ func TestRelativeDelta(t *testing.T) {
 	}
 	if got := relativeDelta(-1, 0); !math.IsInf(got, 1) {
 		t.Errorf("relativeDelta(-1, 0) = %v, want +Inf", got)
+	}
+}
+
+// TestEstimateRatioReadsTheSameEitherWayRound checks the second form a
+// difference is reported in. The relative difference 1 - A/B changes its
+// magnitude when the roles are swapped; the ratio B/A has to be its exact
+// counterpart, carry the interval's bounds over, and appear in the printed
+// estimate.
+func TestEstimateRatioReadsTheSameEitherWayRound(t *testing.T) {
+	cases := []struct {
+		name               string
+		delta, low, high   float64
+		ratio, rLow, rHigh float64
+	}{
+		{"gives 2 when B takes twice as long", 0.5, 0.4, 0.6, 2, 1 / 0.6, 2.5},
+		{"gives 0.5 when B takes half as long", -1, -1.5, -0.5, 0.5, 0.4, 1 / 1.5},
+		{"gives 1 for no difference", 0, -0.1, 0.1, 1, 1 / 1.1, 1 / 0.9},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := Estimate{Delta: c.delta, Low: c.low, High: c.high, Level: 0.95}
+			r, lo, hi := e.Ratio()
+			if math.Abs(r-c.ratio) > 1e-12 || math.Abs(lo-c.rLow) > 1e-12 || math.Abs(hi-c.rHigh) > 1e-12 {
+				t.Errorf("ratio %v [%v, %v], want %v [%v, %v]", r, lo, hi, c.ratio, c.rLow, c.rHigh)
+			}
+			if !strings.Contains(e.String(), "B/A") {
+				t.Errorf("the printed estimate lacks the ratio: %s", e)
+			}
+		})
+	}
+}
+
+// TestEstimateDifferenceIsReproducibleFromItsSeed checks that a seeded
+// interval can be recomputed: the same seed gives the same estimate, and seed
+// zero still works, drawing from cryptographic randomness.
+func TestEstimateDifferenceIsReproducibleFromItsSeed(t *testing.T) {
+	a := []float64{10, 11, 12, 10.5, 11.5, 12.5, 10.2, 11.2, 12.2, 10.7, 11.7, 12.7, 10.9}
+	b := []float64{12, 13, 14, 12.5, 13.5, 14.5, 12.2, 13.2, 14.2, 12.7, 13.7, 14.7, 12.9}
+	first, err1 := EstimateDifference(a, b, EstimateOptions{Resamples: 500, Seed: 7})
+	second, err2 := EstimateDifference(a, b, EstimateOptions{Resamples: 500, Seed: 7})
+	if err1 != nil || err2 != nil || first != second {
+		t.Errorf("same seed, different estimates: %+v and %+v (%v, %v)", first, second, err1, err2)
+	}
+	if _, err := EstimateDifference(a, b, EstimateOptions{Resamples: 500}); err != nil {
+		t.Errorf("unseeded estimate failed: %v", err)
 	}
 }

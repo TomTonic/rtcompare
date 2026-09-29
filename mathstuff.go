@@ -8,8 +8,10 @@ import (
 // Median computes the median of the provided slice of float64.
 // If data is empty, Median returns 0.0.
 // The function makes a copy of the input and sorts the copy, so the original slice is not modified.
-// For an odd-length slice it returns the middle element; for an even-length slice it returns
-// the element at index len(data)/2 (the upper middle).
+// For an odd-length slice it returns the middle element; for an even-length
+// slice it returns the mean of the two middle elements. Returning either one of
+// them instead, as this function used to, biases the median of an even count
+// towards that side.
 // Time complexity: O(n log n). Space complexity: O(n) due to the copy required for sorting.
 func Median(data []float64) float64 {
 	if len(data) == 0 {
@@ -20,6 +22,9 @@ func Median(data []float64) float64 {
 	slices.Sort(dataCopy)
 
 	l := len(dataCopy)
+	if l%2 == 0 {
+		return (dataCopy[l/2-1] + dataCopy[l/2]) / 2
+	}
 	return dataCopy[l/2]
 }
 
@@ -135,7 +140,7 @@ func quickselect(xs []float64, k uint64) float64 {
 
 // QuickMedian returns the median in expected O(n) time.
 // In case of an odd number of elements, it returns the middle one.
-// In case of an even number of elements, it returns the higher of the two middle ones.
+// In case of an even number of elements, it returns the mean of the two middle ones.
 // Returns math.NaN() for an empty input slice.
 // Note: This function modifies the input array. To avoid this, pass a copy.
 func QuickMedian(xs []float64) float64 {
@@ -143,6 +148,11 @@ func QuickMedian(xs []float64) float64 {
 		return math.NaN()
 	}
 	n := uint64(len(xs))
-	median := quickselect(xs, n/2)
-	return median
+	upper := quickselect(xs, n/2)
+	if n%2 == 1 {
+		return upper
+	}
+	// quickselect leaves every element below position n/2 no larger than the
+	// one it returned, so the lower middle is the largest of them.
+	return (slices.Max(xs[:n/2]) + upper) / 2
 }

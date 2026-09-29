@@ -153,8 +153,8 @@ func (p Pooled) ProcessesFor(abs, rel float64) int {
 // String renders the pooled result as a short multi-line summary.
 func (p Pooled) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "difference %+.2f%% [%+.2f%%, %+.2f%%] at %.0f%% confidence, pooled over %d processes\n",
-		p.Delta*100, p.Low*100, p.High*100, p.Level*100, p.Processes)
+	fmt.Fprintf(&b, "difference %+.2f%% [%+.2f%%, %+.2f%%] at %.0f%% confidence; B/A %.3f× [%.3f×, %.3f×]; pooled over %d processes\n",
+		p.Delta*100, p.Low*100, p.High*100, p.Level*100, 1/(1-p.Delta), 1/(1-p.Low), 1/(1-p.High), p.Processes)
 	fmt.Fprintf(&b, "scatter between processes %.3f%%, within one %.3f%% (%.1fx), I² %.2f\n",
 		p.SpreadBetween*100, p.SpreadWithin*100, p.Inflation, p.I2)
 	switch {

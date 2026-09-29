@@ -17,12 +17,12 @@ func TestMedian(t *testing.T) {
 		{[]float64{}, 0},
 		{[]float64{1}, 1},
 		{[]float64{1, 2, 3}, 2},
-		{[]float64{1, 2, 3, 4}, 3},
+		{[]float64{1, 2, 3, 4}, 2.5},
 		{[]float64{3, 1, 2}, 2},
-		{[]float64{4, 1, 3, 2}, 3},
+		{[]float64{4, 1, 3, 2}, 2.5},
 		{[]float64{1, 2, 2, 3, 4}, 2},
 		{[]float64{1.5, 3.5, 2.5}, 2.5},
-		{[]float64{1.1, 2.2, 3.3, 4.4}, 3.3},
+		{[]float64{1.1, 2.2, 3.3, 4.4}, (2.2 + 3.3) / 2},
 	}
 
 	for _, tc := range testCases {
@@ -83,19 +83,19 @@ func TestQuickMedianDeterministic(t *testing.T) {
 	cases := []struct {
 		name   string
 		input  []float64
-		expect float64 // expected lower-middle for even counts, exact middle for odd
+		expect float64 // the mean of the two middle values for even counts, the middle one for odd
 	}{
 		{"odd sorted", []float64{1, 2, 3}, 2},
 		{"odd unsorted", []float64{5, 1, 4, 2, 3}, 3},
-		{"even sorted", []float64{1, 2, 3, 4}, 3},    // higher middle
-		{"even unsorted", []float64{10, 1, 8, 3}, 8}, // sorted: [1,3,8,10] -> higher middle = 8
+		{"even sorted", []float64{1, 2, 3, 4}, 2.5},
+		{"even unsorted", []float64{10, 1, 8, 3}, 5.5}, // sorted: [1,3,8,10] -> (3+8)/2
 		{"duplicates even", []float64{2, 2, 2, 2}, 2},
 		{"duplicates odd", []float64{7, 7, 7}, 7},
 	}
 
 	for _, cc := range cases {
 		t.Run(cc.name, func(t *testing.T) {
-			// QuickMedian mutiert das Slice, also erst eine Kopie übergeben, falls Input mehrfach gebraucht wird.
+			// QuickMedian mutates the slice, so it gets a copy.
 			input := make([]float64, len(cc.input))
 			copy(input, cc.input)
 			got := QuickMedian(input)
@@ -106,17 +106,17 @@ func TestQuickMedianDeterministic(t *testing.T) {
 	}
 }
 
-func TestQuickMedianRandomCompareToSortedLowerMedian(t *testing.T) {
+func TestQuickMedianRandomCompareToSortedMedian(t *testing.T) {
 	const runs = 10_000
 	for i := range runs {
 		n := rand.Intn(5000) + 1 // length 1..50
 		xs := make([]float64, n)
 		for j := 0; j < n; j++ {
-			// Erzeuge eine Mischung aus Ganz- und Gleitkommawerten (inkl. negativer Werte)
+			// A mix of integer and fractional values, negative ones included.
 			xs[j] = float64(rand.Intn(2001)-1000) + rand.Float64()
 		}
 
-		// QuickMedian verändert das Slice, also Kopien für beide Operationen verwenden
+		// QuickMedian mutates the slice, so both operations get copies.
 		qs := make([]float64, n)
 		copy(qs, xs)
 		got := QuickMedian(qs)
@@ -126,9 +126,12 @@ func TestQuickMedianRandomCompareToSortedLowerMedian(t *testing.T) {
 		slices.Sort(sorted)
 
 		expected := sorted[n/2]
+		if n%2 == 0 {
+			expected = (sorted[n/2-1] + sorted[n/2]) / 2
+		}
 
 		if got != expected {
-			t.Fatalf("run %d: mismatch\norig: %v\nsorted: %v\nexpected(lower-mid): %v\ngot: %v", i, xs, sorted, expected, got)
+			t.Fatalf("run %d: mismatch\norig: %v\nsorted: %v\nexpected: %v\ngot: %v", i, xs, sorted, expected, got)
 		}
 	}
 }

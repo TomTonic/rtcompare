@@ -477,3 +477,36 @@ func TestPairSlotsGiveBothHalvesTheSameHistory(t *testing.T) {
 		}
 	}
 }
+
+// TestValidationBootstrapsFollowTheirSeed checks that a seeded validation is
+// reproducible in everything but the measurements: the same A/A samples give
+// the same confidences under the same seed, and every run of every candidate
+// draws from seeds of its own.
+func TestValidationBootstrapsFollowTheirSeed(t *testing.T) {
+	a := []float64{10, 11, 12, 10.5, 11.5, 12.5, 10.2, 11.2, 12.2, 10.7, 11.7}
+	b := []float64{10.1, 11.1, 12.1, 10.6, 11.6, 12.6, 10.3, 11.3, 12.3, 10.8, 11.8}
+	opt := ValidationOptions{Resamples: 500, Level: 0.95, Seed: 5}
+	first, second := newAARuns(opt, 0), newAARuns(opt, 0)
+	first.add(a, b)
+	second.add(a, b)
+	if first.confidences[0] != second.confidences[0] || first.tieRates[0] != second.tieRates[0] {
+		t.Errorf("same seed, different results: %v/%v and %v/%v", first.confidences, first.tieRates, second.confidences, second.tieRates)
+	}
+	seen := map[uint64]bool{}
+	for stream := range uint64(2) {
+		r := newAARuns(opt, stream)
+		for range 3 {
+			r.deltas = append(r.deltas, 0)
+			ab, ba := r.seeds()
+			for _, s := range []uint64{ab, ba} {
+				if s == 0 || seen[s] {
+					t.Fatalf("seed %d repeats or is zero", s)
+				}
+				seen[s] = true
+			}
+		}
+	}
+	if ab, ba := newAARuns(ValidationOptions{}, 0).seeds(); ab != 0 || ba != 0 {
+		t.Errorf("an unseeded validation should draw from cryptographic randomness, got seeds %d and %d", ab, ba)
+	}
+}
