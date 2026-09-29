@@ -116,31 +116,21 @@ type HarnessValidation struct {
 	// something about the measurement favours one position over the other,
 	// which is what interleaving the order is meant to prevent.
 	//
-	// These are computed with ties split rather than as the plain confidence at
-	// threshold zero, which would centre above 0.5 even on a perfect setup. See
+	// A replicate whose difference is exactly zero counts half for each side,
+	// rather than wholly for A as the plain confidence at threshold zero
+	// would, which would centre above 0.5 even on a perfect setup. See
 	// TieRate.
 	MeanConfidence   float64
 	MedianConfidence float64
 
-	// TieRate is the share of bootstrap replicates in which both resampled
-	// medians came out exactly equal, taken as the median across the runs.
+	// TieRate is the share of bootstrap replicates whose difference came out
+	// exactly zero, taken as the median across the runs.
 	//
-	// The median rather than the mean, because of how the per-run figure is
-	// obtained. It is recovered as confAB + confBA - 1 from two independent
-	// bootstrap runs, so it carries the Monte Carlo error of both and can come
-	// out slightly negative when the true rate is near zero. Clamping those to
-	// zero would bias a mean upwards by a few tenths of a point on a setup that
-	// ties hardly at all; the median is unaffected, since half the estimates
-	// land on either side. The cost is that a true rate below the Monte Carlo
-	// noise reports as zero, which is the honest answer at that resolution.
-	//
-	// Timing measurements are quantized, so identical values are common and ties
-	// with them. One A/A run here produced 102 samples holding only 35 distinct
-	// values, and tied medians in 14.4% of its replicates. Since the confidence
-	// at threshold zero asks whether delta >= 0, every one of those ties counts
-	// as "A at least as fast", which lifts it by half the tie rate. Over 40 runs
-	// of that setup the mean tie rate was 17.8% and the offset against the
-	// tie-split figure was 0.089, matching half of it to three decimals.
+	// Timing measurements are quantized, so identical values are common, and
+	// so are pairs of batches that took exactly the same number of ticks.
+	// Since the confidence at threshold zero asks whether delta >= 0, every
+	// tie counts as "A at least as fast", which lifts it by half the tie rate;
+	// MeanConfidence and MedianConfidence split the ties instead.
 	//
 	// A high tie rate means the measurement is coarse relative to the
 	// differences being asked about. The fix is longer batches, and only longer
@@ -561,24 +551,31 @@ func newAARuns(opt ValidationOptions, stream uint64) *aaRuns {
 
 // add records one A/A run from its two sample series.
 func (r *aaRuns) add(sampleA, sampleB []float64) {
-	medA, medB := Median(sampleA), Median(sampleB)
-	delta := 0.0
-	if medB != 0 && !math.IsNaN(medA) && !math.IsNaN(medB) {
-		delta = 1 - medA/medB
+	// The two halves were measured in the same rounds, so they are paired,
+	// and the A/A difference is the paired one, as the comparison's is.
+	delta := pairedDelta(sampleA, sampleB)
+	if math.IsNaN(delta) || math.IsInf(delta, 0) {
+		delta = 0
 	}
 	r.deltas = append(r.deltas, delta)
 
-	// Both directions, so that ties can be split. With
-	//   confAB = P(medA < medB) + P(tie)
-	//   confBA = P(medA > medB) + P(tie)
-	// and the three probabilities summing to one, (confAB + 1 - confBA)/2
-	// collapses to P(medA < medB) + P(tie)/2, and confAB + confBA - 1
-	// recovers the tie rate. Both follow from the public API alone.
-	seedAB, seedBA := r.seeds()
-	confAB := BootstrapConfidence(sampleA, sampleB, []float64{0.0}, r.opt.Resamples, seedAB)[0].Confidence
-	confBA := BootstrapConfidence(sampleB, sampleA, []float64{0.0}, r.opt.Resamples, seedBA)[0].Confidence
-	r.confidences = append(r.confidences, (confAB+1-confBA)/2)
-	r.tieRates = append(r.tieRates, math.Max(0, confAB+confBA-1))
+	// One bootstrap answers both directions: a replicate favours A when its
+	// difference is positive, B when it is negative, and neither when it is
+	// exactly zero, which quantized timings produce often. The confidence
+	// splits those ties evenly, so that an unbiased setup centres on 0.5.
+	var above, ties int
+	reps := replicates(sampleA, sampleB, r.opt.Resamples, 1, r.seed(), true)
+	for _, d := range reps {
+		switch {
+		case d > 0:
+			above++
+		case d == 0:
+			ties++
+		}
+	}
+	n := float64(len(reps))
+	r.confidences = append(r.confidences, (float64(above)+float64(ties)/2)/n)
+	r.tieRates = append(r.tieRates, float64(ties)/n)
 
 	// Drift is a property of the order the samples arrived in, which the
 	// bootstrap above has already discarded. Both series are examined; a run
@@ -602,16 +599,15 @@ func (r *aaRuns) add(sampleA, sampleB []float64) {
 	}
 }
 
-// seeds returns the bootstrap seeds of the next run, one per direction, all
-// distinct across runs and candidates; zero, for cryptographic randomness,
-// when the options carry no seed.
-func (r *aaRuns) seeds() (ab, ba uint64) {
+// seed returns the bootstrap seed of the run being added, distinct across
+// runs and candidates; zero, for cryptographic randomness, when the options
+// carry no seed.
+func (r *aaRuns) seed() uint64 {
 	if r.opt.Seed == 0 {
-		return 0, 0
+		return 0
 	}
 	base := mixSeed(r.opt.Seed ^ (r.stream+1)*0x9E3779B97F4A7C15)
-	run := uint64(len(r.deltas))
-	return mixSeed(base + 2*run), mixSeed(base + 2*run + 1)
+	return mixSeed(base + uint64(len(r.deltas)))
 }
 
 // result summarises the recorded runs.

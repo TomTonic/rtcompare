@@ -3,6 +3,7 @@ package rtcompare
 import (
 	"github.com/TomTonic/rtcompare/prng"
 	"math"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -489,5 +490,113 @@ func TestEstimateDifferenceIsReproducibleFromItsSeed(t *testing.T) {
 	}
 	if _, err := EstimateDifference(a, b, EstimateOptions{Resamples: 500}); err != nil {
 		t.Errorf("unseeded estimate failed: %v", err)
+	}
+}
+
+// commonModePairs simulates n pairs of batches whose true difference is 0.2,
+// each pair disturbed by a factor common to both members with the given
+// spread, and each member by 2% of its own.
+func commonModePairs(rng *rand.Rand, n int, common float64) (a, b []float64) {
+	for range n {
+		m := math.Exp(common * rng.NormFloat64())
+		a = append(a, 100*m*math.Exp(0.02*rng.NormFloat64()))
+		b = append(b, 125*m*math.Exp(0.02*rng.NormFloat64()))
+	}
+	return a, b
+}
+
+// TestPairedEstimateCancelsCommonDisturbances checks why Compare pairs its
+// measurements: a disturbance that hits both batches of a pair, such as the
+// clock speed changing, cancels in their ratio. Simulated from a fixed seed
+// with such disturbances, the paired interval has to cover the true
+// difference at about its level and be far narrower than the unpaired one,
+// which covers nearly always because it counts the common disturbance as
+// noise; the paired point estimate is 1 - median(A[i]/B[i]).
+func TestPairedEstimateCancelsCommonDisturbances(t *testing.T) {
+	rng := rand.New(rand.NewPCG(122, 1))
+	const truth, trials = 0.2, 600
+	hits := 0
+	var paired, unpaired float64
+	for trial := range trials {
+		a, b := commonModePairs(rng, 51, 0.05)
+		p, err := EstimateDifference(a, b, EstimateOptions{Resamples: 500, Seed: uint64(trial + 1), Paired: true})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		u, err := EstimateDifference(a, b, EstimateOptions{Resamples: 500, Seed: uint64(trial + 1)})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if p.Low <= truth && truth <= p.High {
+			hits++
+		}
+		paired += p.High - p.Low
+		unpaired += u.High - u.Low
+		if trial == 0 {
+			q := make([]float64, len(a))
+			for i := range a {
+				q[i] = a[i] / b[i]
+			}
+			if want := 1 - Median(q); p.Delta != want {
+				t.Errorf("paired point estimate %v, want 1 - median of the ratios %v", p.Delta, want)
+			}
+		}
+	}
+	if coverage := float64(hits) / trials; coverage < 0.93 || coverage > 0.975 {
+		t.Errorf("paired coverage %.1f%%, want about 95%%", coverage*100)
+	}
+	if ratio := paired / unpaired; ratio > 0.5 {
+		t.Errorf("paired intervals are %.0f%% as wide as unpaired ones, want at most half", ratio*100)
+	}
+}
+
+// TestConfidencesForMatchesTheInterval checks that the two answers a
+// comparison gives come from the same resampling: under the same options, each
+// confidence is exactly the share of the interval's replicates that reach the
+// threshold, and about the level's upper tail reach the interval's lower
+// bound. Paired measurements of unequal length, NaN thresholds and too few
+// measurements are errors.
+func TestConfidencesForMatchesTheInterval(t *testing.T) {
+	a, b := commonModePairs(rand.New(rand.NewPCG(122, 2)), 51, 0.05)
+	opt := EstimateOptions{Resamples: 2000, Seed: 3, Paired: true}
+	e, err := EstimateDifference(a, b, opt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	c, err := ConfidencesFor(a, b, []float64{e.Low, e.BootstrapMedian}, opt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	reps := replicates(a, b, opt.Resamples, 1, opt.Seed, true)
+	for _, th := range []float64{e.Low, e.BootstrapMedian} {
+		reached := 0
+		for _, d := range reps {
+			if d >= th {
+				reached++
+			}
+		}
+		if want := float64(reached) / float64(len(reps)); confAt(c, th) != want {
+			t.Errorf("confidence at %v is %v, but %v of the interval's replicates reach it", th, confAt(c, th), want)
+		}
+	}
+	if atLow := confAt(c, e.Low); atLow < 0.97 {
+		t.Errorf("confidence at the interval's lower bound %.3f, want about 0.975", atLow)
+	}
+	bad := []struct {
+		name       string
+		a, b       []float64
+		thresholds []float64
+		want       string
+	}{
+		{"returns error for pairs of unequal length", a, b[:40], nil, "as many"},
+		{"returns error for a NaN threshold", a, b, []float64{math.NaN()}, "NaN"},
+		{"returns error for too few measurements", a[:5], b[:5], nil, "not enough"},
+	}
+	for _, c := range bad {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := ConfidencesFor(c.a, c.b, c.thresholds, opt); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("got %v, want an error mentioning %q", err, c.want)
+			}
+		})
 	}
 }

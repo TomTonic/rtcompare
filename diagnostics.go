@@ -214,10 +214,27 @@ type EstimateOptions struct {
 
 	// Seed makes the resampling reproducible: the same seed and inputs give
 	// the same Estimate. Zero selects cryptographic randomness instead.
-	// Replicates are drawn exactly as [BlockBootstrapConfidence] draws them
-	// for the same seed and block length, so the two agree replicate for
-	// replicate.
+	// Replicates are drawn exactly as [ConfidencesFor] draws them for the same
+	// options, and without Paired as [BlockBootstrapConfidence] does, so they
+	// agree replicate for replicate.
 	Seed uint64
+
+	// Paired says that A[i] and B[i] were measured together, as the samples
+	// [Collect] returns are: in the same round, next to each other. The
+	// difference is then 1 - median(A[i]/B[i]) over the pairs, and whole
+	// pairs are resampled, so that a disturbance that hit both members of a
+	// pair alike, such as a change of clock speed or a busy neighbour,
+	// cancels in their ratio instead of widening the interval. A and B must
+	// have the same length.
+	//
+	// Measured on memory-bound candidates, paired intervals were 25 to 38%
+	// narrower than unpaired ones; simulated with disturbances common to both
+	// members of a pair, the unpaired interval covered at 99 to 100% where
+	// 95% was asked for, at up to five times the width, while the paired one
+	// held 94 to 95% at a width the common disturbance did not affect, also
+	// with one-sided outliers in up to 30% of the batches (issue #122).
+	// [Compare] measures in pairs and uses it.
+	Paired bool
 }
 
 // Estimate is a point estimate of the relative difference between two sets of
@@ -236,9 +253,11 @@ type EstimateOptions struct {
 // [Estimate.Ratio] for the factor between the two, which String prints too.
 type Estimate struct {
 	// Delta is the relative difference computed on the measurements themselves,
-	// 1 - median(A)/median(B). Positive means A is smaller, which for runtimes
-	// means faster. It is the point estimate, taken from the data rather than
-	// from the resampling, so it does not move when Resamples changes.
+	// 1 - median(A)/median(B), or for paired measurements, as [Compare] takes
+	// them, 1 - median(A[i]/B[i]); see EstimateOptions.Paired. Positive means
+	// A is smaller, which for runtimes means faster. It is the point estimate,
+	// taken from the data rather than from the resampling, so it does not move
+	// when Resamples changes.
 	Delta float64
 
 	// Low and High bound Delta at the requested Level. They are the empirical
@@ -333,49 +352,93 @@ func (e Estimate) String() string {
 //	e, err := rtcompare.EstimateDifference(r.SamplesA, r.SamplesB, rtcompare.EstimateOptions{
 //		Level: r.Estimate.Level, Resamples: r.Estimate.Resamples, BlockLength: r.BlockLength, Seed: r.Seed})
 func EstimateDifference(A, B []float64, opt EstimateOptions) (Estimate, error) {
-	if len(A) < MinimumDataPoints || len(B) < MinimumDataPoints {
-		return Estimate{}, fmt.Errorf("not enough data points: need at least %d measurements for each input", MinimumDataPoints)
+	opt, err := opt.resolve(A, B)
+	if err != nil {
+		return Estimate{}, err
 	}
-	level, resamples := opt.Level, opt.Resamples
-	if level == 0 {
-		level = DefaultConfidenceLevel
-	}
-	if math.IsNaN(level) || level <= 0 || level >= 1 {
-		return Estimate{}, fmt.Errorf("rtcompare: level must be strictly between 0 and 1, got %v", level)
-	}
-	if resamples == 0 {
-		resamples = DefaultResamples
-	}
-	blockLength := max(1, opt.BlockLength)
 
-	// quickMedian rearranges what it is given, so the point estimate works on
-	// copies and leaves the caller's measurements alone.
-	pointA := quickMedian(slices.Clone(A))
-	pointB := quickMedian(slices.Clone(B))
-
-	deltas := make([]float64, 0, resamples)
-	next := bootstrapStream(opt.Seed)
-	for range resamples {
-		medA := quickMedian(blockSample(A, blockLength, next))
-		medB := quickMedian(blockSample(B, blockLength, next))
-		if d := relativeDelta(medA, medB); !math.IsNaN(d) {
-			deltas = append(deltas, d)
-		}
+	var point float64
+	if opt.Paired {
+		point = pairedDelta(A, B)
+	} else {
+		// quickMedian rearranges what it is given, so the point estimate
+		// works on copies and leaves the caller's measurements alone.
+		point = relativeDelta(quickMedian(slices.Clone(A)), quickMedian(slices.Clone(B)))
 	}
+	deltas := slices.DeleteFunc(replicates(A, B, opt.Resamples, opt.BlockLength, opt.Seed, opt.Paired), math.IsNaN)
 	if len(deltas) == 0 {
 		return Estimate{}, fmt.Errorf("rtcompare: every bootstrap replicate produced an undefined difference; the measurements are probably not usable")
 	}
 	slices.Sort(deltas)
 
-	tail := (1 - level) / 2
+	tail := (1 - opt.Level) / 2
 	return Estimate{
-		Delta:           relativeDelta(pointA, pointB),
+		Delta:           point,
 		Low:             quantileOfSorted(deltas, tail),
 		High:            quantileOfSorted(deltas, 1-tail),
-		Level:           level,
-		Resamples:       resamples,
+		Level:           opt.Level,
+		Resamples:       opt.Resamples,
 		BootstrapMedian: quantileOfSorted(deltas, 0.5),
 	}, nil
+}
+
+// ConfidencesFor reports, for each threshold, the confidence that A beats B by
+// at least that relative difference, drawn exactly as [EstimateDifference]
+// draws its interval under the same options: the share of the very replicates
+// the interval is read from.
+//
+// Parameters: A and B are the measurements; thresholds are relative
+// differences as for [CompareSamples], where an empty list asks about zero;
+// opt is as for EstimateDifference, and Level is not used.
+//
+// It returns one entry per distinct threshold in ascending order, or an error
+// for too few measurements, pairs of unequal length, or a NaN threshold.
+//
+// Use it for paired measurements, such as a Report's, where CompareSamples
+// and [BlockBootstrapConfidence] resample A and B independently. A Report's
+// confidences are recomputed with
+//
+//	rtcompare.ConfidencesFor(r.SamplesA, r.SamplesB, thresholds, rtcompare.EstimateOptions{
+//		Resamples: r.Estimate.Resamples, BlockLength: r.BlockLength, Seed: r.Seed, Paired: true})
+func ConfidencesFor(A, B []float64, thresholds []float64, opt EstimateOptions) (Confidences, error) {
+	opt, err := opt.resolve(A, B)
+	if err != nil {
+		return nil, err
+	}
+	for i, t := range thresholds {
+		if math.IsNaN(t) {
+			return nil, fmt.Errorf("rtcompare: thresholds[%d] is NaN, which is not a usable threshold", i)
+		}
+	}
+	unique := uniqueSortedThresholds(thresholds)
+	result := make(Confidences, len(unique))
+	for j, t := range unique {
+		result[j].Threshold = t
+	}
+	countAtLeast(result, replicates(A, B, opt.Resamples, opt.BlockLength, opt.Seed, opt.Paired))
+	return result, nil
+}
+
+// resolve checks the options against the measurements and fills in the
+// defaults, for EstimateDifference and ConfidencesFor alike.
+func (opt EstimateOptions) resolve(A, B []float64) (EstimateOptions, error) {
+	if len(A) < MinimumDataPoints || len(B) < MinimumDataPoints {
+		return opt, fmt.Errorf("not enough data points: need at least %d measurements for each input", MinimumDataPoints)
+	}
+	if opt.Paired && len(A) != len(B) {
+		return opt, fmt.Errorf("rtcompare: paired measurements need as many of A as of B, got %d and %d", len(A), len(B))
+	}
+	if opt.Level == 0 {
+		opt.Level = DefaultConfidenceLevel
+	}
+	if math.IsNaN(opt.Level) || opt.Level <= 0 || opt.Level >= 1 {
+		return opt, fmt.Errorf("rtcompare: level must be strictly between 0 and 1, got %v", opt.Level)
+	}
+	if opt.Resamples == 0 {
+		opt.Resamples = DefaultResamples
+	}
+	opt.BlockLength = max(1, opt.BlockLength)
+	return opt, nil
 }
 
 // quantileOfSorted returns the p-quantile of an ascending slice, interpolating

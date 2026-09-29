@@ -402,37 +402,71 @@ func bootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint
 		return result
 	}
 
-	// Counts are indexed by position rather than keyed by threshold value, so
-	// that accumulation does not depend on float64 map-key behaviour.
-	counts := make([]uint64, len(thresholds))
+	countAtLeast(result, replicates(A, B, resamples, blockLength, prngSeed, false))
+	return result
+}
 
-	next := bootstrapStream(prngSeed)
-
-	for range resamples {
-		sampleA := blockSample(A, blockLength, next)
-		sampleB := blockSample(B, blockLength, next)
-		medA := quickMedian(sampleA)
-		medB := quickMedian(sampleB)
-
-		delta := relativeDelta(medA, medB)
-
-		// Written out per threshold rather than stopping at the first miss.
-		// The thresholds are sorted ascending, so an early exit would be
-		// correct for finite values and delta, but it would also be a trap for
-		// anyone later relaxing the NaN filter above: a NaN sorts to the front
-		// and `delta < NaN` is false, so the scan would abort before evaluating
-		// anything. The full scan costs one comparison per threshold.
-		for j, threshold := range thresholds {
-			if delta >= threshold {
+// countAtLeast sets each entry's confidence to the share of the replicates
+// that meet its threshold. Every threshold is checked for every replicate
+// rather than stopping at the first miss: the thresholds are sorted, so an
+// early exit would be correct for finite values, but a NaN sorts to the front
+// and would end the scan before anything was counted.
+func countAtLeast(result Confidences, deltas []float64) {
+	counts := make([]uint64, len(result))
+	for _, delta := range deltas {
+		for j := range result {
+			if delta >= result[j].Threshold {
 				counts[j]++
 			}
 		}
 	}
-
 	for j := range result {
-		result[j].Confidence = float64(counts[j]) / float64(resamples)
+		result[j].Confidence = float64(counts[j]) / float64(len(deltas))
 	}
-	return result
+}
+
+// replicates draws resamples bootstrap replicates of the relative difference,
+// in the order drawn, all from one stream seeded with seed; see
+// bootstrapStream. Unpaired, each replicate resamples A and B separately and
+// compares their medians, 1 - median(A*)/median(B*). Paired, it resamples the
+// ratios A[i]/B[i] of the pairs and takes 1 - median of them, so that a
+// disturbance that hit both members of a pair alike cancels in their ratio.
+// Replicates whose difference is undefined are NaN.
+func replicates(A, B []float64, resamples uint64, blockLength int, seed uint64, paired bool) []float64 {
+	next := bootstrapStream(seed)
+	out := make([]float64, resamples)
+	if paired {
+		q := pairQuotients(A, B)
+		for r := range out {
+			out[r] = 1 - quickMedian(blockSample(q, blockLength, next))
+		}
+		return out
+	}
+	for r := range out {
+		medA := quickMedian(blockSample(A, blockLength, next))
+		medB := quickMedian(blockSample(B, blockLength, next))
+		out[r] = relativeDelta(medA, medB)
+	}
+	return out
+}
+
+// pairQuotients returns A[i]/B[i] for each pair, with equal members giving
+// exactly one, as two zeros or two equal infinities do in relativeDelta.
+func pairQuotients(A, B []float64) []float64 {
+	q := make([]float64, min(len(A), len(B)))
+	for i := range q {
+		if A[i] == B[i] {
+			q[i] = 1
+		} else {
+			q[i] = A[i] / B[i]
+		}
+	}
+	return q
+}
+
+// pairedDelta is the paired point estimate, 1 - median(A[i]/B[i]).
+func pairedDelta(A, B []float64) float64 {
+	return 1 - quickMedian(pairQuotients(A, B))
 }
 
 // F2T (FactorToThreshold) converts a multiplicative speedup timesFaster (e.g. 3.0 => A is 3× faster)
