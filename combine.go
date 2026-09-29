@@ -74,9 +74,31 @@ type Pooled struct {
 	// Validated reports whether every combined process ran its A/A validation.
 	Validated bool
 
-	// NoiseFloor is the median of the validated processes' noise floors, zero
-	// when none was validated. Resolved requires Delta to clear it, as for a
-	// single Report.
+	// Bias is the systematic error the A/A validations found: the mean over the
+	// processes of each one's mean signed A/A difference, as a fraction. It is
+	// what identical code reported in every process alike, which is the one
+	// harness error that pooling cannot average out. Zero when the reports
+	// carry no A/A differences.
+	Bias float64
+
+	// NoiseFloor is what Delta has to clear for Resolved.
+	//
+	// When the reports carry their A/A differences (ValidationA.Deltas and
+	// ValidationB.Deltas, as Compare and multiproc provide), it is |Bias| plus
+	// the t quantile at Level times Bias's standard error across processes: an
+	// upper bound on the systematic harness error. That is the right bar for a
+	// pooled result, and a lower one than a single process's floor. A single
+	// Report's floor is a high quantile of the A/A differences, because its
+	// interval covers only the noise within its process; the pooled interval
+	// already covers everything that differs between processes, the harness's
+	// random error included, so only the part that repeats in every process
+	// is left for the floor to catch. Gating the pooled Delta with a single
+	// process's floor instead kept small real effects from ever resolving,
+	// however many processes ran (issue #121).
+	//
+	// When any validated report lacks its A/A differences, NoiseFloor falls
+	// back to the median of the processes' noise floors, which is
+	// conservative. It is zero when no process was validated.
 	NoiseFloor float64
 
 	// Resolved is the short answer: the pooled interval excludes zero and Delta
@@ -261,7 +283,7 @@ func combine(reports []Report, level float64, firstStage int) (Pooled, error) {
 		p.Inflation = p.SpreadBetween / p.SpreadWithin
 	}
 	p.Q, p.I2 = heterogeneity(deltas, ses)
-	p.Validated, p.NoiseFloor = pooledFloor(reports)
+	p.Validated, p.Bias, p.NoiseFloor = pooledFloor(reports, level)
 	p.Resolved = (p.Low > 0 || p.High < 0) && math.Abs(p.Delta) > p.NoiseFloor
 	p.Warnings = p.warnings(reports)
 	return p, nil
@@ -322,16 +344,34 @@ func heterogeneity(deltas, ses []float64) (q, i2 float64) {
 	return q, i2
 }
 
-// pooledFloor returns whether every report was validated and the median noise
-// floor of those that were.
-func pooledFloor(reports []Report) (all bool, floor float64) {
-	var floors []float64
+// pooledFloor returns whether every report was validated, the systematic A/A
+// bias, and the floor the pooled delta has to clear; see Pooled.NoiseFloor.
+// Each process counts once, by the mean of its own A/A differences, since the
+// runs within one process share its layout and are not independent of each
+// other.
+func pooledFloor(reports []Report, level float64) (all bool, bias, floor float64) {
+	var floors, means []float64
+	complete := true
 	for _, r := range reports {
-		if r.Validated {
-			floors = append(floors, r.NoiseFloor)
+		if !r.Validated {
+			continue
 		}
+		floors = append(floors, r.NoiseFloor)
+		aa := slices.Concat(r.ValidationA.Deltas, r.ValidationB.Deltas)
+		if len(aa) == 0 {
+			complete = false
+			continue
+		}
+		m, _ := meanAndSampleSD(aa)
+		means = append(means, m)
 	}
-	return len(floors) == len(reports), medianOrZero(floors)
+	all = len(floors) == len(reports)
+	if !complete || len(means) < 3 {
+		return all, 0, medianOrZero(floors)
+	}
+	bias, sd := meanAndSampleSD(means)
+	k := float64(len(means))
+	return all, bias, math.Abs(bias) + studentTQuantile((1+level)/2, k-1)*sd/math.Sqrt(k)
 }
 
 // warnings lists the things that undermine a pooled result.
@@ -345,8 +385,13 @@ func (p Pooled) warnings(reports []Report) []string {
 		w = append(w, "not every process ran its A/A validation, so the noise floor is taken from those that did, or is unknown")
 	} else if math.Abs(p.Delta) <= p.NoiseFloor {
 		w = append(w, fmt.Sprintf(
-			"the pooled difference of %.2f%% does not clear the %.2f%% median noise floor of the processes",
+			"the pooled difference of %.2f%% does not clear the %.2f%% noise floor, the bound on what the harness reports between identical code in every process",
 			p.Delta*100, p.NoiseFloor*100))
+	}
+	if p.Bias != 0 && math.Abs(p.Bias) > p.NoiseFloor-math.Abs(p.Bias) {
+		w = append(w, fmt.Sprintf(
+			"the A/A validations found a systematic difference of %+.2f%% between identical code, the same in every process; the harness favours one position, and pooling cannot remove that",
+			p.Bias*100))
 	}
 	if !(p.Low > 0 || p.High < 0) {
 		w = append(w, fmt.Sprintf(

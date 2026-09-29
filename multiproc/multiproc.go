@@ -239,8 +239,9 @@ type Comparison struct {
 
 	// Reports holds one report per process that recorded it, in process order.
 	// They carry the estimate, noise floor, verdict, suspension and warnings of
-	// each process, but not the raw samples or validations, which stay in the
-	// child.
+	// each process, and of the validations only the A/A differences in
+	// ValidationA.Deltas and ValidationB.Deltas; the raw samples and the rest
+	// of the validations stay in the child.
 	Reports []rtcompare.Report
 
 	// Pooled is the result of pooling Reports: [rtcompare.CombineStaged] once
@@ -643,7 +644,9 @@ type childFile struct {
 
 // record is the part of a Report that crosses the process boundary. The full
 // Report cannot: its Confidence map has float keys, which JSON does not allow,
-// and its samples and validations are not needed for pooling.
+// and its samples are not needed for pooling. Of the validations, only the
+// signed A/A differences cross, which rtcompare.Combine reads the systematic
+// harness bias from.
 type record struct {
 	Name       string             `json:"name"`
 	NsPerOpA   float64            `json:"ns_a"`
@@ -654,6 +657,8 @@ type record struct {
 	Resolved   bool               `json:"resolved"`
 	Suspended  time.Duration      `json:"suspended"`
 	Warnings   []string           `json:"warnings,omitempty"`
+	AADeltasA  []float64          `json:"aa_deltas_a,omitempty"`
+	AADeltasB  []float64          `json:"aa_deltas_b,omitempty"`
 }
 
 func newRecord(name string, r rtcompare.Report) record {
@@ -661,15 +666,18 @@ func newRecord(name string, r rtcompare.Report) record {
 		Name: name, NsPerOpA: r.NsPerOpA, NsPerOpB: r.NsPerOpB, Estimate: r.Estimate,
 		NoiseFloor: r.NoiseFloor, Validated: r.Validated, Resolved: r.Resolved,
 		Suspended: r.Suspended, Warnings: r.Warnings,
+		AADeltasA: r.ValidationA.Deltas, AADeltasB: r.ValidationB.Deltas,
 	}
 }
 
 func (rec record) report() rtcompare.Report {
-	return rtcompare.Report{
+	r := rtcompare.Report{
 		NsPerOpA: rec.NsPerOpA, NsPerOpB: rec.NsPerOpB, Estimate: rec.Estimate,
 		NoiseFloor: rec.NoiseFloor, Validated: rec.Validated, Resolved: rec.Resolved,
 		Suspended: rec.Suspended, Warnings: rec.Warnings,
 	}
+	r.ValidationA.Deltas, r.ValidationB.Deltas = rec.AADeltasA, rec.AADeltasB
+	return r
 }
 
 // splitmix derives well-spread seeds from consecutive integers, one round of
