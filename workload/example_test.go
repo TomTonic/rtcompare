@@ -20,9 +20,9 @@ func goMap(target int) workload.Structure[map[uint64]struct{}] {
 		Apply: func(m map[uint64]struct{}, run []workload.Op) {
 			for _, op := range run {
 				if op.Kind == workload.Insert {
-					m[uint64(op.ID)] = struct{}{}
+					m[op.Key] = struct{}{}
 				} else {
-					delete(m, uint64(op.ID))
+					delete(m, op.Key)
 				}
 			}
 		},
@@ -36,9 +36,9 @@ func set3Set(target int) workload.Structure[*set3.Set3[uint64]] {
 		Apply: func(s *set3.Set3[uint64], run []workload.Op) {
 			for _, op := range run {
 				if op.Kind == workload.Insert {
-					s.Add(uint64(op.ID))
+					s.Add(op.Key)
 				} else {
-					s.Remove(uint64(op.ID))
+					s.Remove(op.Key)
 				}
 			}
 		},
