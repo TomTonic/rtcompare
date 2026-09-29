@@ -46,9 +46,9 @@ func (c *Cursor) Position() int { return c.pos }
 //	candidate := rtcompare.Candidate{Name: "map", Batch: cur.Batch(ops, func(run []workload.Op) {
 //		for _, op := range run {
 //			if op.Kind == workload.Insert {
-//				m[uint64(op.ID)] = struct{}{}
+//				m[op.Key] = struct{}{}
 //			} else {
-//				delete(m, uint64(op.ID))
+//				delete(m, op.Key)
 //			}
 //		}
 //	})}

@@ -35,10 +35,16 @@
 // build costs, separately. [Cycle], [Build], [Replay], [Cursor] and [Check]
 // are the parts it is made of, for setups it does not cover.
 //
-// The generator works on abstract element IDs; the caller maps them to its own
-// keys and values. IDs 0 to target-1 are the elements the structure holds at
-// rest, and transient IDs follow from target upwards, each inserted once and
-// deleted once.
+// Every operation names its element twice: by an ID, which says which element
+// it is, and by a Key, which is what to insert into or delete from the
+// structure. IDs 0 to target-1 are the elements the structure holds at rest,
+// and transient IDs follow from target upwards, each inserted once and deleted
+// once. That makes the IDs sequential, and the transient ones all larger than
+// the permanent ones, which is the one arrangement a benchmark must not use as
+// keys: an ordered structure would see every insertion at its right edge. The
+// keys are therefore scattered over the whole uint64 range by default, see
+// [KeyOrder]. Use op.Key for integer keys, or map op.ID to keys of your own
+// through a precomputed slice, and keep the mapping out of the timed loop.
 package workload
 
 import (
@@ -70,11 +76,52 @@ func (k Kind) String() string {
 	}
 }
 
-// Op is one mutation of a stream: an element ID and what to do with it. It
-// occupies 8 bytes, so a cycle of 12.7 million operations takes about 100 MB.
+// Op is one mutation of a stream: which element, and what to do with it. It
+// occupies 16 bytes, so a cycle of 12.7 million operations takes about 200 MB.
 type Op struct {
-	ID   uint32
+	// Key is the element's key, the value to insert into or delete from the
+	// structure under test. Keys are distinct for distinct IDs, and the same
+	// ID has the same key in every stream made with the same Config, so a
+	// [Build] and a [Cycle] fit together. See [KeyOrder] for how they are
+	// chosen.
+	Key uint64
+
+	// ID identifies the element among those of the stream: 0 to target-1 for
+	// the elements present at rest, target upwards for transient ones.
+	ID uint32
+
+	// Kind is what the operation does.
 	Kind Kind
+}
+
+// KeyOrder chooses how IDs become keys, see Config.Keys.
+type KeyOrder int
+
+const (
+	// Scattered maps IDs to keys by a seeded permutation of the uint64 range,
+	// so that the keys of permanent and transient elements are interleaved
+	// and in no particular order, as the keys of a real workload are. It is
+	// the zero value, and the right choice for any structure that orders its
+	// keys or hashes them.
+	Scattered KeyOrder = iota
+
+	// Sequential uses the ID itself as the key. The permanent keys are then 0
+	// to target-1 and every transient key lies above all of them, so an
+	// ordered structure takes every insertion at its right edge. Choose it
+	// only to measure exactly that, such as append-only time series keys.
+	Sequential
+)
+
+// String implements [fmt.Stringer].
+func (o KeyOrder) String() string {
+	switch o {
+	case Scattered:
+		return "Scattered"
+	case Sequential:
+		return "Sequential"
+	default:
+		return fmt.Sprintf("KeyOrder(%d)", int(o))
+	}
 }
 
 // Policy decides which present transient element a deletion removes.
@@ -143,6 +190,35 @@ type Config struct {
 	// Victims chooses which transient element a deletion removes. The zero
 	// value is Uniform.
 	Victims Policy
+
+	// Keys chooses how IDs become keys. The zero value is Scattered, derived
+	// from Seed.
+	Keys KeyOrder
+}
+
+// Key returns the key of the element with the given ID, as the streams made
+// with this Config carry it in Op.Key.
+//
+// Use it to fill a structure with the elements present at rest, IDs 0 to
+// target-1, before replaying a [Cycle] on it, or to look up the elements a
+// stream holds. It computes the key, a few nanoseconds, so read Op.Key in a
+// timed loop rather than calling it there.
+func (c Config) Key(id uint32) uint64 {
+	if c.Keys == Sequential {
+		return uint64(id)
+	}
+	return scatter(id, c.Seed)
+}
+
+// scatter is a permutation of the uint64 range applied to the ID, keyed by the
+// seed: the ID is combined with a seed-derived constant and then mixed with
+// the finaliser of MurmurHash3, which is a bijection, so that distinct IDs can
+// never share a key.
+func scatter(id uint32, seed uint64) uint64 {
+	z := uint64(id) ^ mixSeed(seed^0x6b6579730a6b6579)
+	z = (z ^ (z >> 33)) * 0xff51afd7ed558ccd
+	z = (z ^ (z >> 33)) * 0xc4ceb9fe1a85ec53
+	return z ^ (z >> 33)
 }
 
 // Build returns a stream that takes a structure from empty to holding exactly
@@ -189,11 +265,12 @@ func Build(target int, c Config) ([]Op, error) {
 // more elements than fit in a uint32 ID.
 //
 // Use it for steady-state mutation benchmarks: build the structure with the
-// IDs 0 to target-1, then replay the cycle through a [Replay] in the batch.
-// Because the cycle ends in its start state, a batch can wrap around to the
-// beginning, and the structure the last sample measures is the one the first
-// sample measured. At 1M elements and r = 2 a cycle has 2M operations and
-// takes 16 MB.
+// elements of IDs 0 to target-1, from a [Build] stream or with the keys from
+// Config.Key, then replay the cycle through a [Replay] in the batch. Because
+// the cycle ends in its start state, a batch can wrap around to the beginning,
+// and the structure the last sample measures is the one the first sample
+// measured. At 1M elements and r = 2 a cycle has 2M operations and takes
+// 32 MB.
 func Cycle(target int, c Config) ([]Op, error) {
 	c, transients, err := c.resolve(target, 0)
 	if err != nil {
@@ -227,6 +304,11 @@ func (c Config) resolve(target int, minRatio float64) (Config, int, error) {
 	case Uniform, FIFO, LIFO:
 	default:
 		return c, 0, fmt.Errorf("workload: unknown Victims policy %d", int(c.Victims))
+	}
+	switch c.Keys {
+	case Scattered, Sequential:
+	default:
+		return c, 0, fmt.Errorf("workload: unknown KeyOrder %d", int(c.Keys))
 	}
 	transients := math.Round((c.Ratio - 1) * float64(target))
 	if float64(target)+transients > math.MaxUint32 {

@@ -49,9 +49,14 @@ func (s *simulation) run() {
 	}
 	for s.live.len() > 0 {
 		for range min(1+int(s.rng.Uint32N(uint32(s.c.MaxBurst))), s.live.len()) {
-			s.ops = append(s.ops, Op{ID: s.live.remove(&s.rng), Kind: Delete})
+			s.ops = append(s.ops, s.op(s.live.remove(&s.rng), Delete))
 		}
 	}
+}
+
+// op makes the operation on the element with the given ID, with its key.
+func (s *simulation) op(id uint32, kind Kind) Op {
+	return Op{Key: s.c.Key(id), ID: id, Kind: kind}
 }
 
 // insertBurst inserts between 1 and MaxBurst elements. Each one is transient
@@ -68,11 +73,11 @@ func (s *simulation) insertBurst() {
 			s.nextTransient++
 			s.transientsLeft--
 			s.live.add(id)
-			s.ops = append(s.ops, Op{ID: id, Kind: Insert})
+			s.ops = append(s.ops, s.op(id, Insert))
 			continue
 		}
 		last := len(s.permanent) - 1
-		s.ops = append(s.ops, Op{ID: s.permanent[last], Kind: Insert})
+		s.ops = append(s.ops, s.op(s.permanent[last], Insert))
 		s.permanent = s.permanent[:last]
 	}
 }
@@ -98,7 +103,7 @@ func (s *simulation) deleteBurst() {
 	}
 	d = min(d, n)
 	for range d {
-		s.ops = append(s.ops, Op{ID: s.live.remove(&s.rng), Kind: Delete})
+		s.ops = append(s.ops, s.op(s.live.remove(&s.rng), Delete))
 	}
 }
 

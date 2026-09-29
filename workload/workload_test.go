@@ -235,12 +235,12 @@ func TestCheckRejectsInvalidStreams(t *testing.T) {
 		start, end []uint32
 		want       string
 	}{
-		{"accepts a valid stream", []Op{{5, Insert}, {1, Delete}}, []uint32{1}, []uint32{5}, ""},
-		{"rejects inserting a present element", []Op{{1, Insert}}, []uint32{1}, []uint32{1}, "op 0 inserts element 1"},
-		{"rejects deleting an absent element", []Op{{2, Insert}, {3, Delete}}, nil, []uint32{2}, "op 1 deletes element 3"},
-		{"rejects an unknown kind", []Op{{1, Kind(9)}}, nil, nil, "Kind(9)"},
+		{"accepts a valid stream", []Op{{ID: 5, Kind: Insert}, {ID: 1, Kind: Delete}}, []uint32{1}, []uint32{5}, ""},
+		{"rejects inserting a present element", []Op{{ID: 1, Kind: Insert}}, []uint32{1}, []uint32{1}, "op 0 inserts element 1"},
+		{"rejects deleting an absent element", []Op{{ID: 2, Kind: Insert}, {ID: 3, Kind: Delete}}, nil, []uint32{2}, "op 1 deletes element 3"},
+		{"rejects an unknown kind", []Op{{ID: 1, Kind: Kind(9)}}, nil, nil, "Kind(9)"},
 		{"rejects a missing element at the end", nil, []uint32{1}, []uint32{1, 2}, "element 2 should be present"},
-		{"rejects an extra element at the end", []Op{{4, Insert}}, nil, nil, "first being 4"},
+		{"rejects an extra element at the end", []Op{{ID: 4, Kind: Insert}}, nil, nil, "first being 4"},
 		{"rejects a duplicate start element", nil, []uint32{1, 1}, nil, "twice"},
 	}
 	for _, c := range cases {
@@ -381,4 +381,85 @@ func FuzzStreamsAndReplay(f *testing.F) {
 			t.Fatalf("%d elements present after Settle, want %d", len(m.present), size)
 		}
 	})
+}
+
+// TestKeysInterleaveLongAndShortLivedElements checks that the keys a benchmark
+// inserts look like the keys of real use. It belongs to the stream generator,
+// whose element IDs are sequential and put every transient element above all
+// permanent ones; used as keys, that would make an ordered structure take
+// every insertion at its right edge. By default each operation carries a
+// scattered key instead: distinct for distinct elements, the same in a Build
+// and a Cycle of one Config and equal to Config.Key, with about half of the
+// transient keys below the median permanent key. Sequential keeps the IDs.
+func TestKeysInterleaveLongAndShortLivedElements(t *testing.T) {
+	const target = 5000
+	cases := []struct {
+		name          string
+		keys          KeyOrder
+		wantBelowHalf func(float64) bool
+	}{
+		{"scatters transient keys among the permanent ones", Scattered, func(f float64) bool { return f > 0.45 && f < 0.55 }},
+		{"keeps the IDs as keys when asked for sequential ones", Sequential, func(f float64) bool { return f == 0 }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{Seed: 7, Keys: c.keys}
+			build, err := Build(target, cfg)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			cycle, err := Cycle(target, cfg)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			keyOf := map[uint32]uint64{}
+			idOf := map[uint64]uint32{}
+			for _, op := range slices.Concat(build, cycle) {
+				if op.Key != cfg.Key(op.ID) {
+					t.Fatalf("op on element %d carries key %d, Config.Key says %d", op.ID, op.Key, cfg.Key(op.ID))
+				}
+				if k, ok := keyOf[op.ID]; ok && k != op.Key {
+					t.Fatalf("element %d has two keys, %d and %d", op.ID, k, op.Key)
+				}
+				if id, ok := idOf[op.Key]; ok && id != op.ID {
+					t.Fatalf("elements %d and %d share key %d", id, op.ID, op.Key)
+				}
+				keyOf[op.ID], idOf[op.Key] = op.Key, op.ID
+			}
+			if c.keys == Sequential && cfg.Key(42) != 42 {
+				t.Errorf("sequential key of 42 is %d", cfg.Key(42))
+			}
+
+			var permanent []uint64
+			for id := range uint32(target) {
+				permanent = append(permanent, cfg.Key(id))
+			}
+			slices.Sort(permanent)
+			median := permanent[target/2]
+			below, transients := 0, 0
+			for id, key := range keyOf {
+				if id >= target {
+					transients++
+					if key < median {
+						below++
+					}
+				}
+			}
+			if f := float64(below) / float64(transients); !c.wantBelowHalf(f) {
+				t.Errorf("%.1f%% of %d transient keys lie below the median permanent key", f*100, transients)
+			}
+		})
+	}
+}
+
+// TestKeysDependOnTheSeed checks that two runs with different seeds do not
+// benchmark the same keys, and that an unknown key order is rejected rather
+// than silently treated as one of the known ones.
+func TestKeysDependOnTheSeed(t *testing.T) {
+	if (Config{Seed: 1}).Key(0) == (Config{Seed: 2}).Key(0) {
+		t.Error("seeds 1 and 2 gave element 0 the same key")
+	}
+	if _, err := Build(10, Config{Keys: KeyOrder(5)}); err == nil || !strings.Contains(err.Error(), "KeyOrder") {
+		t.Errorf("got %v, want an error about the unknown KeyOrder", err)
+	}
 }

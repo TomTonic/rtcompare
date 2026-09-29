@@ -166,9 +166,9 @@ goMap := workload.Structure[map[uint64]struct{}]{
     Apply: func(m map[uint64]struct{}, run []workload.Op) {
         for _, op := range run {
             if op.Kind == workload.Insert {
-                m[uint64(op.ID)] = struct{}{}
+                m[op.Key] = struct{}{}
             } else {
-                delete(m, uint64(op.ID))
+                delete(m, op.Key)
             }
         }
     },
@@ -177,8 +177,12 @@ res, err := workload.Compare(100_000, goMap, otherSet, workload.Options{})
 fmt.Println(res)
 ```
 
-The IDs are abstract; map them to your own keys and values, for example
-through a precomputed slice of keys. You get **two answers**, because there are
+Each operation carries its key in `op.Key`: distinct for distinct elements,
+and scattered over the whole `uint64` range, so that the keys of long-lived and
+short-lived elements are interleaved as in real use. (The elements are also
+numbered, `op.ID`, and those numbers are sequential; used as keys, they would
+put every insertion at the right edge of an ordered structure.) For other key
+types, map `op.ID` to your own keys through a precomputed slice. You get **two answers**, because there are
 two different questions, and mixing them into one number would get both
 wrong:
 
