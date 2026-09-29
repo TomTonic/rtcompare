@@ -36,11 +36,12 @@ func scaledCandidate(name string, mult uint64) Candidate {
 // ValidationRuns is 10, not fewer. At 3 it produced NoiseFloor exactly 0 in
 // 2.5% of 200 local runs — the 90th-percentile floor over only three A/A
 // deltas needs just the top two of them to tie at zero, which quantized
-// timing does routinely — and a real assertion elsewhere in this file treats
-// exactly that as implausible. Ten runs saw it 0 times in the same 200
-// trials, and cost is still small: validation is the dominant cost of a
-// comparison, but these run against a fixed 20000-operation batch rather than
-// calibrating, so ten of them stay well under a second.
+// timing does routinely — and a floor that is zero that often says little
+// about the setup. Ten runs saw it 0 times in the same 200 trials, though
+// still twice in 100 under the race detector, and cost is still small:
+// validation is the dominant cost of a comparison, but these run against a
+// fixed 20000-operation batch rather than calibrating, so ten of them stay
+// well under a second.
 //
 // The warm-up is cut to 10 ms. The default is sized for working sets near the
 // size of the last-level cache, and these candidates touch no memory at all,
@@ -118,7 +119,19 @@ func TestCompareResolvesARealDifference(t *testing.T) {
 	if !r.Validated {
 		t.Error("validation should have run by default")
 	}
-	if r.NoiseFloor <= 0 || r.NoiseFloor > 0.2 {
+	// A floor of exactly zero is a correct result, not a wiring fault. With a
+	// 30 ns clock and a batch of some 12 µs, the medians of two identical
+	// series often land on the same tick, and when nine of the ten A/A runs
+	// do, their 90th percentile is zero. That happened in 2 of 100 runs under
+	// the race detector, which is why this checks where the floor comes from
+	// rather than that it is positive.
+	if r.ValidationA.Runs != 10 || r.ValidationB.Runs != 10 {
+		t.Errorf("expected 10 A/A runs per candidate, got %d and %d", r.ValidationA.Runs, r.ValidationB.Runs)
+	}
+	if want := math.Max(r.ValidationA.NoiseFloor, r.ValidationB.NoiseFloor); r.NoiseFloor != want {
+		t.Errorf("noise floor %v is not the worse of the candidates' A/A floors, %v", r.NoiseFloor, want)
+	}
+	if r.NoiseFloor < 0 || r.NoiseFloor > 0.2 {
 		t.Errorf("noise floor %v is not a plausible fraction for identical code", r.NoiseFloor)
 	}
 	if r.NsPerOpA >= r.NsPerOpB {
