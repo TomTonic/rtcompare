@@ -186,10 +186,14 @@ goMap := workload.Structure[map[uint64]struct{}]{
     New:  func() map[uint64]struct{} { return make(map[uint64]struct{}, 100_000) },
     Apply: func(m map[uint64]struct{}, run []workload.Op) {
         for _, op := range run {
-            if op.Kind == workload.Insert {
+            switch op.Kind {
+            case workload.Insert:
                 m[op.Key] = struct{}{}
-            } else {
+            case workload.Delete:
                 delete(m, op.Key)
+            default: // Lookup and LookupMiss, only if Config asks for lookups
+                _, ok := m[op.Key]
+                found = found || ok
             }
         }
     },
@@ -244,7 +248,12 @@ What `workload.Compare` takes care of, so that you don't have to:
 `workload.Config` tunes the streams: `Ratio` (insertions per element at rest,
 default 2), burst length, and `Victims`, which chooses what a deletion removes:
 `Uniform` (the default, like a general-purpose map), `FIFO` (a queue or a
-retention window), or `LIFO` (a stack or undo log).
+retention window), or `LIFO` (a stack or undo log). Two more are off by
+default: `PermanentChurn` also deletes and reinserts long-lived elements, so
+that the tombstones, merges and rebalancing of real deletions reach the whole
+structure, and `Lookups` with `MissRate` mixes lookups into the stream, which
+then carries the kinds `Lookup` and `LookupMiss` as well, so the `Apply`
+function has to handle all four kinds, as above.
 
 Both answers describe one run of your program. For structures of more than a
 few megabytes, or full of pointers, that is one observation of where their

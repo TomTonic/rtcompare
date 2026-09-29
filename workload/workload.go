@@ -66,6 +66,11 @@ const (
 	Insert Kind = iota
 	// Delete removes an element that is present.
 	Delete
+	// Lookup looks up an element that is present. Streams contain lookups
+	// only when Config.Lookups asks for them.
+	Lookup
+	// LookupMiss looks up an element that is not present, and never was.
+	LookupMiss
 )
 
 // String implements [fmt.Stringer].
@@ -75,6 +80,10 @@ func (k Kind) String() string {
 		return "insert"
 	case Delete:
 		return "delete"
+	case Lookup:
+		return "lookup"
+	case LookupMiss:
+		return "lookup miss"
 	default:
 		return fmt.Sprintf("Kind(%d)", uint8(k))
 	}
@@ -198,6 +207,25 @@ type Config struct {
 	// Keys chooses how IDs become keys. The zero value is Scattered, derived
 	// from Seed.
 	Keys KeyOrder
+
+	// PermanentChurn is the share of deletions, from 0 up to but excluding 1,
+	// that remove a permanent element rather than a transient one; the element
+	// is inserted again later in the same stream, so that a cycle still ends
+	// where it began. Zero, the default, never touches the permanent elements
+	// once they are in, which spares the long-lived part of a structure the
+	// tombstones, merges and rebalancing that real deletions cause there.
+	PermanentChurn float64
+
+	// Lookups is the number of lookups per insertion or deletion, spread evenly
+	// over the stream, and MissRate the share of them, from 0 to 1, that look
+	// for an element that is not present. A lookup that hits picks uniformly
+	// among the elements present at that point. Zero, the default, makes a
+	// stream of mutations only.
+	//
+	// Lookups add the kinds Lookup and LookupMiss to the stream, so an Apply
+	// function has to tell all four kinds apart; one written as "insert, or
+	// else delete" would delete where it should look up.
+	Lookups, MissRate float64
 }
 
 // Key returns the key of the element with the given ID, as the streams made
@@ -248,7 +276,7 @@ func Build(target int, c Config) ([]Op, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := newSimulation(c, target, transients)
+	s := newSimulation(c, target, transients, false)
 	s.permanent = shuffledIDs(target, &s.rng)
 	s.run()
 	return s.ops, nil
@@ -283,7 +311,7 @@ func Cycle(target int, c Config) ([]Op, error) {
 	if transients == 0 {
 		return nil, fmt.Errorf("workload: a cycle with Ratio %v over %d elements inserts no transient element; raise Ratio", c.Ratio, target)
 	}
-	s := newSimulation(c, target, transients)
+	s := newSimulation(c, target, transients, true)
 	s.run()
 	return s.ops, nil
 }
@@ -314,8 +342,15 @@ func (c Config) resolve(target int, minRatio float64) (Config, int, error) {
 	default:
 		return c, 0, fmt.Errorf("workload: unknown KeyOrder %d", int(c.Keys))
 	}
+	if !(c.PermanentChurn >= 0 && c.PermanentChurn < 1) {
+		return c, 0, fmt.Errorf("workload: PermanentChurn must be at least 0 and below 1, got %v", c.PermanentChurn)
+	}
+	if !(c.Lookups >= 0) || math.IsInf(c.Lookups, 0) || !(c.MissRate >= 0 && c.MissRate <= 1) {
+		return c, 0, fmt.Errorf("workload: Lookups must be finite and not negative, and MissRate between 0 and 1, got %v and %v", c.Lookups, c.MissRate)
+	}
 	transients := math.Round((c.Ratio - 1) * float64(target))
-	if float64(target)+transients > math.MaxUint32 {
+	// Twice the elements, for the IDs a lookup that misses draws from.
+	if 2*(float64(target)+transients) > math.MaxUint32 {
 		return c, 0, fmt.Errorf("workload: %d elements and %.0f transient ones do not fit in uint32 IDs", target, transients)
 	}
 	if c.MaxBurst == 0 {

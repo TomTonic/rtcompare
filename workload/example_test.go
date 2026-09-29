@@ -11,6 +11,9 @@ import (
 	"github.com/TomTonic/rtcompare/workload"
 )
 
+// found counts successful lookups, so that they are not optimised away.
+var found int
+
 // goMap and set3Set describe the two sets the example compares. Both are
 // created with a capacity hint for the elements at rest, as a program that
 // knows its size would.
@@ -20,10 +23,15 @@ func goMap(target int) workload.Structure[map[uint64]struct{}] {
 		New:  func() map[uint64]struct{} { return make(map[uint64]struct{}, target) },
 		Apply: func(m map[uint64]struct{}, run []workload.Op) {
 			for _, op := range run {
-				if op.Kind == workload.Insert {
+				switch op.Kind {
+				case workload.Insert:
 					m[op.Key] = struct{}{}
-				} else {
+				case workload.Delete:
 					delete(m, op.Key)
+				default: // Lookup and LookupMiss, if Config asks for lookups
+					if _, ok := m[op.Key]; ok {
+						found++
+					}
 				}
 			}
 		},
@@ -36,10 +44,15 @@ func set3Set(target int) workload.Structure[*set3.Set3[uint64]] {
 		New:  func() *set3.Set3[uint64] { return set3.EmptyWithCapacity[uint64](uint32(target)) },
 		Apply: func(s *set3.Set3[uint64], run []workload.Op) {
 			for _, op := range run {
-				if op.Kind == workload.Insert {
+				switch op.Kind {
+				case workload.Insert:
 					s.Add(op.Key)
-				} else {
+				case workload.Delete:
 					s.Remove(op.Key)
+				default: // Lookup and LookupMiss, if Config asks for lookups
+					if s.Contains(op.Key) {
+						found++
+					}
 				}
 			}
 		},

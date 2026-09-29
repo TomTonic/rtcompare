@@ -24,16 +24,45 @@ type simulation struct {
 	// which the deletion bursts are scaled to so that the number of transient
 	// elements present settles at LiveTarget.
 	meanTransients float64
+
+	// The optional parts, all nil or zero unless Config asks for them, so
+	// that a stream without them draws exactly the random numbers it always
+	// did. present holds every element present, for lookups that hit;
+	// permanentPresent the permanent ones, for churn to pick from; pending
+	// the permanent ones churn deleted, to be inserted again.
+	present          *indexSet
+	permanentPresent *indexSet
+	pending          []uint32
+	lookupCredit     float64
+	target           uint32 // the first transient ID; permanent ones lie below
+	missBase         uint32 // the first ID that is never inserted
 }
 
-func newSimulation(c Config, target, transients int) *simulation {
-	return &simulation{
+// newSimulation prepares a stream over target permanent and transients
+// transient elements; atRest says whether the permanent ones are present from
+// the start, as in a cycle, or still to be inserted, as in a build.
+func newSimulation(c Config, target, transients int, atRest bool) *simulation {
+	s := &simulation{
 		c:              c,
 		rng:            prng.NewDPRNG(c.Seed),
 		nextTransient:  uint32(target),
 		transientsLeft: transients,
 		live:           liveSet{policy: c.Victims},
+		target:         uint32(target),
+		missBase:       uint32(target + transients),
 	}
+	if c.Lookups > 0 {
+		s.present = newIndexSet(target + transients)
+	}
+	if c.PermanentChurn > 0 {
+		s.permanentPresent = newIndexSet(target)
+	}
+	if atRest {
+		for id := range uint32(target) {
+			s.markPresent(id)
+		}
+	}
+	return s
 }
 
 // run alternates bursts of insertions and deletions until every insertion is
@@ -47,9 +76,16 @@ func (s *simulation) run() {
 		s.insertBurst()
 		s.deleteBurst()
 	}
+	// Permanent elements that churn took out go back in before the stream
+	// ends, so that it ends with exactly the permanent elements present.
+	for len(s.pending) > 0 {
+		last := len(s.pending) - 1
+		s.insert(s.pending[last])
+		s.pending = s.pending[:last]
+	}
 	for s.live.len() > 0 {
 		for range min(1+int(s.rng.Uint32N(uint32(s.c.MaxBurst))), s.live.len()) {
-			s.ops = append(s.ops, s.op(s.live.remove(&s.rng), Delete))
+			s.delete(s.live.remove(&s.rng))
 		}
 	}
 }
@@ -59,26 +95,83 @@ func (s *simulation) op(id uint32, kind Kind) Op {
 	return Op{Key: s.c.Key(id), ID: id, Kind: kind}
 }
 
-// insertBurst inserts between 1 and MaxBurst elements. Each one is transient
-// or permanent in proportion to how many of each are left, so that both kinds
-// are spread evenly over the stream.
+// insert appends the insertion of id and the lookups that follow it.
+func (s *simulation) insert(id uint32) {
+	s.ops = append(s.ops, s.op(id, Insert))
+	s.markPresent(id)
+	s.lookups()
+}
+
+// delete appends the deletion of id and the lookups that follow it.
+func (s *simulation) delete(id uint32) {
+	s.ops = append(s.ops, s.op(id, Delete))
+	if s.present != nil {
+		s.present.remove(id)
+	}
+	if s.permanentPresent != nil && id < s.target {
+		s.permanentPresent.remove(id)
+	}
+	s.lookups()
+}
+
+// markPresent records that id is present, for the optional parts that need
+// to know.
+func (s *simulation) markPresent(id uint32) {
+	if s.present != nil {
+		s.present.add(id)
+	}
+	if s.permanentPresent != nil && id < s.target {
+		s.permanentPresent.add(id)
+	}
+}
+
+// lookups appends the lookups owed after one mutation: Lookups of them on
+// average, spread evenly, each missing with probability MissRate.
+func (s *simulation) lookups() {
+	if s.c.Lookups == 0 {
+		return
+	}
+	s.lookupCredit += s.c.Lookups
+	for s.lookupCredit >= 1 {
+		s.lookupCredit--
+		if s.present.len() == 0 || s.rng.Float64() < s.c.MissRate {
+			s.ops = append(s.ops, s.op(s.missBase+s.rng.Uint32N(missPool(s.missBase)), LookupMiss))
+		} else {
+			s.ops = append(s.ops, s.op(s.present.random(&s.rng), Lookup))
+		}
+	}
+}
+
+// insertBurst inserts between 1 and MaxBurst elements. Each one is a new
+// transient, a permanent one that churn took out, or a permanent one still to
+// be inserted by a build, in proportion to how many of each are left, so that
+// all kinds are spread evenly over the stream.
 func (s *simulation) insertBurst() {
 	for range 1 + s.rng.Uint32N(uint32(s.c.MaxBurst)) {
-		left := len(s.permanent) + s.transientsLeft
+		left := len(s.permanent) + s.transientsLeft + len(s.pending)
 		if left == 0 {
 			return
 		}
-		if int(s.rng.Uint32N(uint32(left))) < s.transientsLeft {
+		r := int(s.rng.Uint32N(uint32(left)))
+		switch {
+		case r < s.transientsLeft:
 			id := s.nextTransient
 			s.nextTransient++
 			s.transientsLeft--
 			s.live.add(id)
-			s.ops = append(s.ops, s.op(id, Insert))
-			continue
+			s.insert(id)
+		case r < s.transientsLeft+len(s.pending):
+			j, last := r-s.transientsLeft, len(s.pending)-1
+			id := s.pending[j]
+			s.pending[j] = s.pending[last]
+			s.pending = s.pending[:last]
+			s.insert(id)
+		default:
+			last := len(s.permanent) - 1
+			id := s.permanent[last]
+			s.permanent = s.permanent[:last]
+			s.insert(id)
 		}
-		last := len(s.permanent) - 1
-		s.ops = append(s.ops, s.op(s.permanent[last], Insert))
-		s.permanent = s.permanent[:last]
 	}
 }
 
@@ -103,7 +196,13 @@ func (s *simulation) deleteBurst() {
 	}
 	d = min(d, n)
 	for range d {
-		s.ops = append(s.ops, s.op(s.live.remove(&s.rng), Delete))
+		if s.permanentPresent != nil && s.permanentPresent.len() > 0 && s.rng.Float64() < s.c.PermanentChurn {
+			id := s.permanentPresent.random(&s.rng)
+			s.pending = append(s.pending, id)
+			s.delete(id)
+			continue
+		}
+		s.delete(s.live.remove(&s.rng))
 	}
 }
 
@@ -158,4 +257,47 @@ func mixSeed(seed uint64) uint64 {
 		return 1
 	}
 	return z
+}
+
+// indexSet is a set of IDs that can be added to, removed from and drawn from
+// uniformly, each in constant time, for picking the target of a lookup or of
+// churn among the elements present.
+type indexSet struct {
+	ids []uint32
+	pos []int32 // pos[id] is id's index in ids, or -1 when absent
+}
+
+func newIndexSet(capacity int) *indexSet {
+	pos := make([]int32, capacity)
+	for i := range pos {
+		pos[i] = -1
+	}
+	return &indexSet{pos: pos}
+}
+
+func (x *indexSet) len() int { return len(x.ids) }
+
+func (x *indexSet) add(id uint32) {
+	x.pos[id] = int32(len(x.ids))
+	x.ids = append(x.ids, id)
+}
+
+func (x *indexSet) remove(id uint32) {
+	i, last := x.pos[id], len(x.ids)-1
+	moved := x.ids[last]
+	x.ids[i] = moved
+	x.pos[moved] = i
+	x.ids = x.ids[:last]
+	x.pos[id] = -1
+}
+
+func (x *indexSet) random(rng *prng.DPRNG) uint32 {
+	return x.ids[rng.Uint32N(uint32(len(x.ids)))]
+}
+
+// missPool is how many IDs above missBase a lookup that misses draws from:
+// as many as there are elements, so that misses are as spread over the keys
+// as hits are.
+func missPool(missBase uint32) uint32 {
+	return max(1, missBase)
 }
