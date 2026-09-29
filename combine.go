@@ -31,8 +31,16 @@ type Pooled struct {
 
 	// Low and High bound Delta at Level: a Student t interval over the
 	// per-process deltas with Processes-1 degrees of freedom. With few processes
-	// it is wide, and honestly so.
+	// it is wide, and honestly so. For a run sized from its first stage, see
+	// FirstStage, the interval is Stein's instead.
 	Low, High float64
+
+	// FirstStage is zero for [Combine]. For [CombineStaged] it is the number
+	// of processes whose scatter decided how many processes the run needed,
+	// and the interval is Stein's two-stage interval: the half-width is the t
+	// quantile at FirstStage-1 degrees of freedom times the standard deviation
+	// of the first stage's deltas, over the square root of Processes.
+	FirstStage int
 
 	// Level is the coverage level of the interval.
 	Level float64
@@ -81,12 +89,43 @@ type Pooled struct {
 }
 
 // Precise reports whether the interval is narrow enough for the question: its
-// half-width is at most abs, or at most rel times |Delta|. The multiproc
-// package uses it as its rule for when to stop starting processes, with
-// defaults of 0.02 and 0.10.
+// half-width is at most abs, or at most rel times |Delta|.
 func (p Pooled) Precise(abs, rel float64) bool {
 	half := (p.High - p.Low) / 2
 	return half <= abs || half <= rel*math.Abs(p.Delta)
+}
+
+// ProcessesFor returns how many processes the comparison needs in all for the
+// pooled interval to have a half-width of at most abs, or at most rel times
+// |Delta|, judged from this result as the first stage of a run.
+//
+// Parameters: abs and rel are the precision asked for, as for [Pooled.Precise].
+// Call it on the result of [Combine] over the first processes of a run.
+//
+// It returns at least Processes, and math.MaxInt when neither bound can be met
+// because both are zero.
+//
+// Use it to size a run once, from its first stage, and then run exactly that
+// many processes and pool them with [CombineStaged]. That is Stein's two-stage
+// procedure, and it is what keeps the interval honest: a run that instead
+// checks the interval after every process and stops as soon as it is narrow
+// enough stops preferentially when the scatter happened to come out low, and
+// its 95% interval covered only 92 to 94% in simulation (issue #119). The
+// number is ((t*s)/h)², rounded up, with s the scatter between the processes
+// so far, t the t quantile at Level with Processes-1 degrees of freedom, and h
+// the larger of abs and rel*|Delta|. The multiproc package does all of this.
+func (p Pooled) ProcessesFor(abs, rel float64) int {
+	h := math.Max(abs, rel*math.Abs(p.Delta))
+	if !(h > 0) {
+		return math.MaxInt
+	}
+	t := studentTQuantile((1+p.Level)/2, float64(p.Processes-1))
+	root := t * p.SpreadBetween / h
+	need := math.Ceil(root * root)
+	if need >= float64(math.MaxInt32) {
+		return math.MaxInt
+	}
+	return max(p.Processes, int(need))
 }
 
 // String renders the pooled result as a short multi-line summary.
@@ -147,6 +186,39 @@ func (p Pooled) String() string {
 //	if err != nil { ... }
 //	fmt.Println(pooled)
 func Combine(reports []Report, level float64) (Pooled, error) {
+	return combine(reports, level, 0)
+}
+
+// CombineStaged is [Combine] for a run whose number of processes was fixed
+// from its first stage by [Pooled.ProcessesFor], and reports Stein's
+// two-stage interval, which covers at its level even though the run's size
+// depended on its first processes.
+//
+// Parameters: reports holds one Report per process in the order the processes
+// ran, the first stage first; firstStage is how many of them made up the first
+// stage, at least three and at most len(reports); level is as for Combine.
+//
+// It returns the same result as Combine, except for Low, High and FirstStage:
+// the half-width is t*s/sqrt(k) with s the standard deviation of the first
+// stage's deltas and t the t quantile at firstStage-1 degrees of freedom,
+// while Delta is still the mean over all k processes. An error is returned for
+// a firstStage out of range and for the reasons Combine gives.
+//
+// Use it after sizing a run with ProcessesFor; the multiproc package does.
+// Pooling such a run with Combine instead would let the size of the run
+// depend on the scatter that the interval is then built from, which is the
+// optional stopping the two stages exist to avoid. In simulation, with the
+// multiproc defaults, CombineStaged covered at 94.6 to 95.2% at a nominal 95%.
+func CombineStaged(reports []Report, firstStage int, level float64) (Pooled, error) {
+	if firstStage < 3 || firstStage > len(reports) {
+		return Pooled{}, fmt.Errorf("rtcompare: firstStage must be between 3 and the %d reports, got %d", len(reports), firstStage)
+	}
+	return combine(reports, level, firstStage)
+}
+
+// combine is Combine, with Stein's interval from the first firstStage reports
+// when firstStage is not zero.
+func combine(reports []Report, level float64, firstStage int) (Pooled, error) {
 	k := len(reports)
 	if k < 3 {
 		return Pooled{}, fmt.Errorf("rtcompare: need at least 3 per-process reports to combine, got %d", k)
@@ -169,13 +241,19 @@ func Combine(reports []Report, level float64) (Pooled, error) {
 	}
 
 	mean, sd := meanAndSampleSD(deltas)
-	half := studentTQuantile((1+level)/2, float64(k-1)) * sd / math.Sqrt(float64(k))
+	df, s := k-1, sd
+	if firstStage > 0 {
+		_, s = meanAndSampleSD(deltas[:firstStage])
+		df = firstStage - 1
+	}
+	half := studentTQuantile((1+level)/2, float64(df)) * s / math.Sqrt(float64(k))
 	p := Pooled{
 		Processes:     k,
 		Delta:         mean,
 		Low:           mean - half,
 		High:          mean + half,
 		Level:         level,
+		FirstStage:    firstStage,
 		SpreadBetween: sd,
 		SpreadWithin:  Median(slices.Clone(ses)),
 	}

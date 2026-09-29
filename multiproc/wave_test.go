@@ -228,18 +228,19 @@ func recordGOMAXPROCS(p *Process) error {
 }
 
 // TestProcessBudgetDefaultsAndRounding checks how the two regimes settle
-// their process counts: a serial run keeps its numbers, with a default budget
-// of 40; a parallel run rounds its wave up to a whole Rotation, rounds
-// MinProcesses and MaxProcesses up to whole waves, and budgets 10 waves by
-// default.
+// their process counts: a serial run rounds its first stage up to a whole
+// Rotation and keeps its maximum, with a default budget of 40; a parallel run
+// rounds its wave up to a whole Rotation, rounds MinProcesses and
+// MaxProcesses up to whole waves, and budgets 10 waves by default.
 func TestProcessBudgetDefaultsAndRounding(t *testing.T) {
 	cases := []struct {
 		name                     string
 		opt                      Options
 		wave, minProcs, maxProcs int
 	}{
-		{"serial keeps its defaults", Options{}, 1, 5, 40},
-		{"serial keeps explicit counts", Options{MinProcesses: 7, MaxProcesses: 9}, 1, 7, 9},
+		{"serial rounds the default first stage up to a rotation", Options{}, 1, 6, 40},
+		{"serial rounds an explicit first stage up to a rotation", Options{MinProcesses: 7, MaxProcesses: 9}, 1, 8, 9},
+		{"serial rotation of one keeps explicit counts", Options{MinProcesses: 7, MaxProcesses: 9, Rotation: 1}, 1, 7, 9},
 		{"parallel rounds min up and budgets ten waves", Options{Parallel: 4}, 4, 8, 40},
 		{"parallel rounds the wave up to a whole rotation", Options{Parallel: 3}, 4, 8, 40},
 		{"parallel rotation of one keeps the wave", Options{Parallel: 3, Rotation: 1}, 3, 6, 30},

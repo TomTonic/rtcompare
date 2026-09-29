@@ -245,3 +245,96 @@ func TestCombineIntervalCoversAtItsLevel(t *testing.T) {
 		})
 	}
 }
+
+// TestProcessesForFollowsSteinsRule checks how a multi-process run is sized
+// from its first stage: the number of processes has to be what Stein's
+// two-stage rule gives for the precision asked for, never fewer than already
+// ran, and unbounded when no precision can be met.
+func TestProcessesForFollowsSteinsRule(t *testing.T) {
+	// Six processes scattering with a sample standard deviation of 0.03
+	// around 0.05: t(0.975, 5) = 2.570582, and (2.570582*0.03/0.02)² = 14.87.
+	stage := Pooled{Processes: 6, Delta: 0.05, SpreadBetween: 0.03, Level: 0.95}
+	cases := []struct {
+		name     string
+		abs, rel float64
+		want     int
+	}{
+		{"asks for the processes an absolute precision needs", 0.02, 0.10, 15},
+		// h = 0.5*0.05 = 0.025, and (2.570582*0.03/0.025)² = 9.52.
+		{"takes the relative precision where it is looser", 0.005, 0.50, 10},
+		{"never asks for fewer processes than already ran", 1, 0.10, 6},
+		{"is unbounded when no precision can be met", 0, 0, math.MaxInt},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := stage.ProcessesFor(c.abs, c.rel); got != c.want {
+				t.Errorf("got %d processes, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// TestCombineStagedCoversAtItsLevel checks that a pooled result from a run
+// sized by its own first stage is as trustworthy as it says. It belongs to the
+// two-stage procedure behind multiproc: size the run with ProcessesFor from
+// the first six processes, run that many, pool with CombineStaged. Simulated
+// from a fixed seed at the multiproc defaults, a 95% interval has to contain
+// the truth 95% of the time within about three standard errors, where
+// checking the interval after every process covered 92 to 94%.
+func TestCombineStagedCoversAtItsLevel(t *testing.T) {
+	rng := rand.New(rand.NewPCG(119, 1))
+	const firstStage, most, trials = 6, 40, 4000
+	cases := []struct {
+		name          string
+		truth, spread float64
+	}{
+		{"covers 95% for no difference", 0, 0.03},
+		{"covers 95% for a difference as large as the scatter", 0.05, 0.05},
+		{"covers 95% for a large difference", 0.3, 0.05},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			hits := 0
+			for range trials {
+				var reports []Report
+				for range firstStage {
+					reports = append(reports, perProcess(c.truth+c.spread*rng.NormFloat64(), 0.001))
+				}
+				stage, err := Combine(reports, 0.95)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				need := min(most, stage.ProcessesFor(0.02, 0.10))
+				for len(reports) < need {
+					reports = append(reports, perProcess(c.truth+c.spread*rng.NormFloat64(), 0.001))
+				}
+				p, err := CombineStaged(reports, firstStage, 0.95)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if p.Low <= c.truth && c.truth <= p.High {
+					hits++
+				}
+			}
+			if coverage := float64(hits) / trials; coverage < 0.94 || coverage > 0.96 {
+				t.Errorf("coverage %.1f%%, want 95%% within one point", coverage*100)
+			}
+		})
+	}
+}
+
+// TestCombineStagedRejectsABadFirstStage checks that a first stage that
+// cannot have sized a run is refused rather than silently pooled.
+func TestCombineStagedRejectsABadFirstStage(t *testing.T) {
+	reports := []Report{perProcess(0.1, 0.01), perProcess(0.1, 0.01), perProcess(0.1, 0.01), perProcess(0.1, 0.01)}
+	for _, stage := range []int{2, 5} {
+		if _, err := CombineStaged(reports, stage, 0); err == nil || !strings.Contains(err.Error(), "firstStage") {
+			t.Errorf("first stage %d: got %v, want an error", stage, err)
+		}
+	}
+	whole, err := CombineStaged(reports, 4, 0)
+	plain, _ := Combine(reports, 0)
+	if err != nil || whole.Low != plain.Low || whole.High != plain.High || whole.FirstStage != 4 {
+		t.Errorf("a first stage of every report should give Combine's interval: %+v, %v", whole, err)
+	}
+}
