@@ -244,7 +244,10 @@ func TestMeasureInTurnBalancesManyCandidates(t *testing.T) {
 		return Candidate{Name: name, Batch: func(uint64) { log = append(log, name) }}
 	}
 	s := schedule{repeats: 4, innerLoops: 1}
-	samples := measureInTurn([]Candidate{mk("a"), mk("b"), mk("c")}, s)
+	samples, err := measureInTurn([]Candidate{mk("a"), mk("b"), mk("c")}, s)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got, want := strings.Join(log, ""), "abccbaabccba"; got != want {
 		t.Errorf("order: got %s, want %s", got, want)
 	}

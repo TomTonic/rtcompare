@@ -1,6 +1,8 @@
 package rtcompare
 
 import (
+	"cmp"
+	"context"
 	"fmt"
 	"math"
 	"runtime/metrics"
@@ -82,6 +84,23 @@ type CompareOptions struct {
 	// Resamples is the bootstrap resample count. Zero selects
 	// [DefaultResamples].
 	Resamples uint64
+
+	// Progress, when set, is called as the comparison moves through its
+	// stages, and after each A/A validation run, so that a long comparison
+	// can show how far it has got. It is called from the comparing goroutine,
+	// between batches and never inside a measured one, so a slow callback
+	// delays the comparison but does not distort it. See [Progress].
+	Progress func(Progress)
+
+	// MaxDuration, when set, bounds the time the validation may take, which
+	// is the dominant cost of a comparison: once half of MaxDuration has
+	// passed, the validation starts no further A/A runs, provided at least
+	// ten have run (or all requested, if fewer). The measurement itself always
+	// runs in full, so a comparison can still take longer than MaxDuration;
+	// cancel its context through [CompareContext] for a hard limit. A
+	// validation cut short says so in Report.Warnings, and its figures rest
+	// on fewer runs; see [DefaultValidationRuns] for what that costs.
+	MaxDuration time.Duration
 
 	// Seed makes the resampling reproducible: the interval, the confidences
 	// and the validations' bootstraps are all drawn from it. Zero draws a
@@ -185,7 +204,32 @@ type Report struct {
 	// An empty slice is the good case. They are worth reading even when Resolved
 	// is true.
 	Warnings []string
+
+	// requestedRuns is how many A/A runs the validation was asked for, so
+	// that a validation cut short by MaxDuration can be reported.
+	requestedRuns int
 }
+
+// Progress tells a CompareOptions.Progress callback how far a comparison has
+// got.
+type Progress struct {
+	// Stage is the step the comparison is in: [StageCalibrating],
+	// [StageValidating], [StageMeasuring] or [StageResampling], in that order.
+	Stage string
+
+	// Done and Total count the stage's steps. For StageValidating they are the
+	// A/A runs done and requested; the other stages are one step each and are
+	// reported once, as they begin, with Done 0 and Total 1.
+	Done, Total int
+}
+
+// The stages a comparison reports through CompareOptions.Progress.
+const (
+	StageCalibrating = "calibrating"
+	StageValidating  = "validating"
+	StageMeasuring   = "measuring"
+	StageResampling  = "resampling"
+)
 
 // String renders the report as a short multi-line summary.
 func (r Report) String() string {
@@ -292,6 +336,23 @@ func (r Report) String() string {
 // fails, if any threshold is NaN, or if the underlying measurement or
 // validation fails. See [Collect] for the option-validation errors.
 func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
+	return CompareContext(context.Background(), a, b, opt)
+}
+
+// CompareContext is [Compare], stopping as soon as ctx is done.
+//
+// Parameters: ctx bounds the comparison; a, b and opt are those of Compare.
+//
+// It checks ctx between batches, never inside a measured one, so it stops
+// within one batch of ctx being done, and returns an error wrapping ctx's
+// error. Use it to give a comparison a hard time limit or to cancel it from
+// elsewhere, e.g. from a signal handler:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+//	defer cancel()
+//	report, err := rtcompare.CompareContext(ctx, a, b, rtcompare.CompareOptions{})
+//	if errors.Is(err, context.DeadlineExceeded) { ... }
+func CompareContext(ctx context.Context, a, b Candidate, opt CompareOptions) (Report, error) {
 	start := time.Now()
 	if a.Batch == nil {
 		return Report{}, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", a.label("A"))
@@ -314,6 +375,11 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 	if opt.Seed == 0 {
 		opt.Seed = randomSeed()
 	}
+	progress := func(stage string, done, total int) {
+		if opt.Progress != nil {
+			opt.Progress(Progress{Stage: stage, Done: done, Total: total})
+		}
+	}
 
 	co := opt.Collect
 
@@ -321,8 +387,9 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 	// measurement have to describe the same setup, and leaving InnerLoops at
 	// zero would have each of the three runs calibrate for itself.
 	if co.InnerLoops == 0 {
+		progress(StageCalibrating, 0, 1)
 		var err error
-		co.InnerLoops, err = calibratePair(a, b, CalibrationOptions{
+		co.InnerLoops, err = calibratePair(ctx, a, b, CalibrationOptions{
 			MaxQuantizationError: co.MaxQuantizationError,
 			MaxInnerLoops:        co.MaxInnerLoops,
 			GCBetween:            co.GCBetween,
@@ -343,17 +410,24 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 		// from the comparison's.
 		vo := ValidationOptions{Collect: co, Runs: opt.ValidationRuns, Resamples: opt.Resamples,
 			Level: opt.Level, Seed: mixSeed(opt.Seed ^ 0x76616c6964617465)}
-		va, vb, err := ValidatePair(a, b, vo)
+		budget := validationBudget{progress: func(done, total int) { progress(StageValidating, done, total) }}
+		if opt.MaxDuration > 0 {
+			budget.deadline = start.Add(opt.MaxDuration / 2)
+			budget.minRuns = 10
+		}
+		va, vb, err := validatePair(ctx, a, b, vo, budget)
 		if err != nil {
 			return Report{}, fmt.Errorf("validating candidates %s and %s: %w", a.label("A"), b.label("B"), err)
 		}
 		r.Validated = true
 		r.ValidationA, r.ValidationB = va, vb
+		r.requestedRuns = cmp.Or(opt.ValidationRuns, DefaultValidationRuns)
 		r.NoiseFloor = math.Max(va.NoiseFloor, vb.NoiseFloor)
 		r.Autocorrelation = math.Max(va.Autocorrelation, vb.Autocorrelation)
 	}
 
-	sa, sb, err := Collect(a, b, co)
+	progress(StageMeasuring, 0, 1)
+	sa, sb, err := collect(ctx, a, b, co)
 	if err != nil {
 		return Report{}, err
 	}
@@ -380,6 +454,7 @@ func Compare(a, b Candidate, opt CompareOptions) (Report, error) {
 		r.BlockLength = AutoBlockLength(min(len(sa), len(sb)))
 	}
 
+	progress(StageResampling, 0, 1)
 	est, err := EstimateDifference(sa, sb, EstimateOptions{Level: opt.Level, Resamples: opt.Resamples, BlockLength: r.BlockLength, Seed: opt.Seed})
 	if err != nil {
 		return Report{}, err
@@ -520,6 +595,12 @@ func (r Report) warnings() []string {
 			"the ratio B/A shifted %+.2f%% from the first half of the run to the second, so the candidates had not reached a steady state and the difference depends on how long the run was; "+
 				"a common cause is a head start for whichever candidate ran alone last before the comparison or had its data built last, which a longer CollectOptions.WarmupDuration removes",
 			d.RelativeShift*100))
+	}
+
+	if r.Validated && r.ValidationA.Runs < r.requestedRuns {
+		w = append(w, fmt.Sprintf(
+			"the validation stopped after %d of %d A/A runs to stay within MaxDuration, so the noise floor and the rates rest on fewer runs",
+			r.ValidationA.Runs, r.requestedRuns))
 	}
 
 	if r.Validated {

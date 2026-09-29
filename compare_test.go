@@ -1,8 +1,11 @@
 package rtcompare
 
 import (
+	"context"
+	"errors"
 	"math"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -661,5 +664,124 @@ func TestCompareIsReproducibleFromItsSeed(t *testing.T) {
 	opt.SkipValidation = true
 	if r, err = Compare(scaledCandidate("x1", 1), scaledCandidate("x2", 2), opt); err != nil || r.Seed != 42 {
 		t.Errorf("seed %d (%v), want the given 42", r.Seed, err)
+	}
+}
+
+// TestCompareContextStops checks that a comparison can be given a hard limit
+// or cancelled from outside: it has to stop between batches, soon after its
+// context is done, and return an error that says why, whether the context
+// was cancelled before the start, during the validation or by a deadline.
+func TestCompareContextStops(t *testing.T) {
+	cases := []struct {
+		name string
+		ctx  func(t *testing.T) (context.Context, func(Progress))
+		want error
+	}{
+		{"returns at once for a cancelled context", func(t *testing.T) (context.Context, func(Progress)) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, nil
+		}, context.Canceled},
+		{"stops during the validation when cancelled", func(t *testing.T) (context.Context, func(Progress)) {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			return ctx, func(p Progress) {
+				if p.Stage == StageValidating && p.Done > 2 {
+					t.Errorf("validation run %d started after the context was cancelled", p.Done)
+				}
+				if p.Stage == StageValidating && p.Done == 2 {
+					cancel()
+				}
+			}
+		}, context.Canceled},
+		{"stops at a deadline", func(t *testing.T) (context.Context, func(Progress)) {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			t.Cleanup(cancel)
+			return ctx, nil
+		}, context.DeadlineExceeded},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, progress := c.ctx(t)
+			opt := fastCompare()
+			opt.ValidationRuns = 200
+			opt.Progress = progress
+			start := time.Now()
+			_, err := CompareContext(ctx, scaledCandidate("x1", 1), scaledCandidate("x2", 2), opt)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("got %v, want an error wrapping %v", err, c.want)
+			}
+			if elapsed := time.Since(start); elapsed > 2*time.Second {
+				t.Errorf("took %s to stop", elapsed)
+			}
+		})
+	}
+}
+
+// TestCompareReportsProgress checks what a caller showing progress sees: the
+// stages in order, and the validation counted run by run up to the runs
+// requested.
+func TestCompareReportsProgress(t *testing.T) {
+	opt := fastCompare()
+	opt.Collect.InnerLoops = 0
+	opt.Collect.MaxQuantizationError = 0.01
+	var seen []Progress
+	opt.Progress = func(p Progress) { seen = append(seen, p) }
+	if _, err := Compare(scaledCandidate("x1", 1), scaledCandidate("x2", 2), opt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var stages []string
+	validated := -1
+	for _, p := range seen {
+		if len(stages) == 0 || stages[len(stages)-1] != p.Stage {
+			stages = append(stages, p.Stage)
+		}
+		if p.Stage == StageValidating {
+			if p.Done != validated+1 || p.Total != opt.ValidationRuns {
+				t.Errorf("validation progress %d of %d after %d", p.Done, p.Total, validated)
+			}
+			validated = p.Done
+		}
+	}
+	if want := []string{StageCalibrating, StageValidating, StageMeasuring, StageResampling}; !slices.Equal(stages, want) {
+		t.Errorf("stages %v, want %v", stages, want)
+	}
+	if validated != opt.ValidationRuns {
+		t.Errorf("validation progress ended at %d, want %d", validated, opt.ValidationRuns)
+	}
+}
+
+// TestCompareMaxDurationCutsTheValidationShort checks the time budget: the
+// validation, which dominates a comparison's cost, stops starting runs once
+// half the budget is gone, but not before ten runs, and the report says that
+// its figures rest on fewer runs than requested. A validation of fewer than
+// ten runs is not cut at all.
+func TestCompareMaxDurationCutsTheValidationShort(t *testing.T) {
+	cases := []struct {
+		name        string
+		runs        int
+		wantRuns    int
+		wantWarning bool
+	}{
+		{"stops at ten of forty runs", 40, 10, true},
+		{"runs all of five", 5, 5, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opt := fastCompare()
+			opt.ValidationRuns = c.runs
+			opt.MaxDuration = time.Nanosecond
+			r, err := Compare(scaledCandidate("x1", 1), scaledCandidate("x2", 2), opt)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if r.ValidationA.Runs != c.wantRuns || r.ValidationB.Runs != c.wantRuns {
+				t.Errorf("validated %d and %d runs, want %d", r.ValidationA.Runs, r.ValidationB.Runs, c.wantRuns)
+			}
+			warned := strings.Contains(strings.Join(r.Warnings, "\n"), "MaxDuration")
+			if warned != c.wantWarning {
+				t.Errorf("warning about MaxDuration: %v, want %v; warnings %q", warned, c.wantWarning, r.Warnings)
+			}
+		})
 	}
 }
