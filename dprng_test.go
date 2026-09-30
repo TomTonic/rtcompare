@@ -161,7 +161,8 @@ func TestNewDPRNGIsDeterministicForEverySeed(t *testing.T) {
 // of any fixed seed by construction.
 func TestNewDPRNGSeedZeroIsRandom(t *testing.T) {
 	a, b := NewDPRNG(0), NewDPRNG(0)
-	if a.Uint64() == b.Uint64() && a.Uint64() == b.Uint64() {
+	a1, a2, b1, b2 := a.Uint64(), a.Uint64(), b.Uint64(), b.Uint64()
+	if a1 == b1 && a2 == b2 {
 		t.Error("two generators seeded with zero produced the same values")
 	}
 }
