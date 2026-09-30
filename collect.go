@@ -218,21 +218,10 @@ type CollectOptions struct {
 	// Zero selects [DefaultMaxQuantizationError]. Ignored when InnerLoops is set
 	// explicitly.
 	//
-	// It has a second effect worth knowing about. Quantization does not only
-	// blur a measurement, it also collapses distinct measurements onto the same
-	// value, and equal values produce equal medians. That matters for the
-	// confidence at threshold zero, which asks whether delta >= 0 and so counts
-	// every tie as "A at least as fast". Measured on one candidate here:
-	//
-	//	MaxQuantizationError   InnerLoops   batch      tie rate
-	//	                0.01          387   4.5 us       100.0%
-	//	               0.001         4072    46 us        15.3%   (the default)
-	//	              0.0001        44710   482 us         0.6%
-	//
-	// The default is sized for accuracy of a difference's magnitude, where it
-	// performs well. If the question is instead "is A faster at all", tighten it
-	// by an order of magnitude and pay ten times the batch length for it.
-	// [ValidateHarness] reports the tie rate a setup actually produces.
+	// It also decides how often measurements tie, which lifts the confidence
+	// at threshold zero. The default suits the magnitude of a difference; for
+	// "is A faster at all", tighten it tenfold and pay ten times the batch
+	// length. See DefaultMaxQuantizationError for the measurements.
 	MaxQuantizationError float64
 
 	// MaxInnerLoops caps the batch size automatic calibration will try. Zero
@@ -317,13 +306,28 @@ type CollectOptions struct {
 }
 
 // Collect measures two candidate implementations and returns one timing sample
-// per repeat for each, in nanoseconds per operation. The returned slices are
-// suitable as direct inputs to [CompareSamples] and [EstimateDifference].
+// per repeat for each, in nanoseconds per operation.
+//
+// Parameters: a and b are the candidates, see [Candidate]; opt configures the
+// batch size, the order, the warm-up and garbage collection, see
+// [CollectOptions]. Its zero value is usable.
+//
+// It returns the two series in the order they were measured, sample i of each
+// taken next to the other, which makes them pairs for
+// [EstimateDifference] and [ConfidencesFor] with EstimateOptions.Paired. The
+// errors are listed at the end.
+//
+// Use it when [Compare] does more than needed, or to hand the samples to an
+// analysis of your own.
+//
+// # What Collect controls
 //
 // Collect owns the measurement loop so that it can control the things that
 // systematically bias a comparison and that are easy to get wrong by hand:
 // measurement order, warm-up, garbage collection placement, and the division by
 // the inner loop count. It deliberately does not own the inner loop, see [Batch].
+//
+// # Attenuation
 //
 // A note on attenuation, which the returned numbers cannot express: every batch
 // includes whatever fixed per-operation overhead the batch body carries (loop
@@ -338,6 +342,8 @@ type CollectOptions struct {
 // for everything that can be hoisted out of the loop, and read the result as the
 // speedup of the measured region as a whole, not of the isolated function.
 //
+// # The noise floor
+//
 // A note on the noise floor, which choosing an [Order] does not remove: across
 // many A/A runs of identical candidates, the observed difference between the two
 // sample sets has reached anywhere from a few tenths of a percent to well over
@@ -348,12 +354,16 @@ type CollectOptions struct {
 // affected all of them. Treat a result below roughly 1% as "not resolved" rather
 // than as a small but real effect.
 //
+// # What ran before
+//
 // A note on what ran before: the warm-up alternates the candidates for at least
 // CollectOptions.WarmupDuration so that neither starts the measurement with the
 // caches to itself, whichever of them the caller built, validated or calibrated
 // last. See [DefaultWarmupDuration] for why a count of batches is not enough,
 // and [ValidatePair] for validating both candidates without handing one of them
 // that head start in the first place.
+//
+// # Errors
 //
 // Collect returns an error if either candidate has a nil Batch, if Repeats,
 // Warmup or WarmupDuration is negative, if Repeats is below
@@ -625,12 +635,33 @@ func runBatch(c Candidate, n uint64, gc bool) float64 {
 // trustworthy.
 //
 // It is sized for that question, the magnitude of a difference, and not for the
-// separate question of whether a difference exists at all. Quantization also
-// collapses distinct measurements onto equal values, and equal values tie; at
-// this target an ordinary candidate tied in about 15% of bootstrap replicates,
-// which inflates the confidence at a threshold of zero. Tightening the target
-// tenfold took that to 0.6% at ten times the batch length. See
-// CollectOptions.MaxQuantizationError for the measurements.
+// separate question of whether a difference exists at all; see Ties below.
+//
+// # Ties
+//
+// Quantization does not only blur a measurement, it also collapses distinct
+// measurements onto the same value, and equal values tie. That matters for the
+// confidence at threshold zero, which asks whether delta >= 0 and so counts
+// every tie as "A at least as fast". Measured on one candidate here:
+//
+//	MaxQuantizationError   InnerLoops   batch      tie rate
+//	                0.01          387   4.5 us       100.0%
+//	               0.001         4072    46 us        15.3%   (the default)
+//	              0.0001        44710   482 us         0.6%
+//
+// One measurement is an integer count of clock ticks divided by the batch
+// size, so its granularity is precision/InnerLoops, and only a longer batch
+// makes ties rarer. Holding Repeats at 51 and varying only the batch size:
+//
+//	InnerLoops    granularity    tie rate
+//	     1,000     0.042 ns/op       86.3%
+//	     5,000     0.008 ns/op       15.0%
+//	   100,000     0.0004 ns/op       1.5%
+//	   400,000     0.0001 ns/op       0.0%
+//
+// Varying only Repeats at a fixed batch size of 20,000 gave tie rates of
+// 2.2%, 2.3%, 2.8% and 1.8% for 21, 51, 101 and 201 repeats: no trend.
+// HarnessValidation.TieRate reports what a setup actually produces.
 const DefaultMaxQuantizationError = 0.001
 
 // DefaultMaxInnerLoops caps how far [CalibrateInnerLoops] will grow the batch
@@ -694,6 +725,18 @@ type CalibrationOptions struct {
 // CalibrateInnerLoops determines how many operations one batch must perform so
 // that the system clock's granularity contributes at most
 // MaxQuantizationError of relative error to the per-operation result.
+//
+// Parameters: c is the candidate; opt sets the error bound, the largest batch
+// to try and the garbage collection to mirror, see [CalibrationOptions].
+//
+// It returns the [Calibration], with the batch size in InnerLoops, or an error
+// for a nil Batch, an invalid bound, or a batch that never grew long enough,
+// which usually means the Batch function ignores its n.
+//
+// Use it to fix a batch size once and reuse it; [Collect], [ValidatePair] and
+// [Compare] call it when CollectOptions.InnerLoops is zero.
+//
+// # How it works
 //
 // This is the mechanism that makes measuring below the clock's resolution work,
 // and the arithmetic behind it is simple. A single batch measurement is off by
