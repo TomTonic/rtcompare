@@ -194,9 +194,16 @@ type Report struct {
 	// long the run was; see [DefaultWarmupDuration].
 	DriftRatio DriftReport
 
+	// Quantization is the relative size of one clock tick in a batch of the
+	// faster candidate: the step by which measured differences move. A
+	// difference below [QuantizationGate] such steps does not resolve, since
+	// rounding alone can produce it; lengthen the batches through
+	// CollectOptions.MaxQuantizationError to see below it.
+	Quantization float64
+
 	// Resolved is the short answer: the difference is both statistically
 	// distinguishable from zero and larger than what this setup invents on its
-	// own. It is deliberately conservative, and false does not mean the
+	// own, and than the clock can round into it. It is deliberately conservative, and false does not mean the
 	// candidates are equally fast; it means this run did not establish that they
 	// are not.
 	Resolved bool
@@ -479,7 +486,8 @@ func CompareContext(ctx context.Context, a, b Candidate, opt CompareOptions) (Re
 	// Both bars have to be cleared: the difference must be distinguishable from
 	// zero, and it must be larger than what this setup invents from identical
 	// code. Neither implies the other.
-	r.Resolved = est.Excludes(0) && math.Abs(est.Delta) > r.NoiseFloor
+	r.Quantization = quantization(GetSampleTimePrecision(), min(r.NsPerOpA, r.NsPerOpB)*float64(co.InnerLoops))
+	r.Resolved = r.resolves()
 	r.Suspended = suspendedSince(start)
 	r.LiveHeap = liveHeap()
 	r.Warnings = r.warnings()
@@ -490,6 +498,36 @@ func CompareContext(ctx context.Context, a, b Candidate, opt CompareOptions) (Re
 // comparison that was given none, so that the one it used can be recorded.
 func randomSeed() uint64 {
 	return prng.NewCPRNG(8).Uint64() | 1
+}
+
+// QuantizationGate is how many clock ticks per batch a difference has to
+// exceed, as a share of the batch, before Compare counts it as resolved.
+//
+// A measured batch is a whole number of clock ticks, so the ratio of a pair of
+// batches lies on a lattice one tick apart, and so does the median of those
+// ratios. When the batches are short enough for most pairs to tie, the
+// median sits on 0 or on one tick, and the bootstrap interval around a value
+// on a lattice collapses to lattice points: identical code was reported as
+// one tick apart, with an interval excluding zero, in 4 of 30 comparisons on
+// a CI runner. A difference of one tick can be rounding alone; one and a half
+// ticks cannot.
+const QuantizationGate = 1.5
+
+// quantization is the relative size of one clock tick in a batch of the
+// given duration, zero when either is unknown.
+func quantization(tick int64, batchNs float64) float64 {
+	if tick <= 0 || !(batchNs > 0) {
+		return 0
+	}
+	return float64(tick) / batchNs
+}
+
+// resolves is the verdict: the interval excludes zero, and the difference
+// clears both what the setup invents from identical code and what the clock
+// can round into it.
+func (r Report) resolves() bool {
+	d := math.Abs(r.Estimate.Delta)
+	return r.Estimate.Excludes(0) && d > r.NoiseFloor && d > QuantizationGate*r.Quantization
 }
 
 // suspendedSince returns how much further the wall clock has moved than the
@@ -560,6 +598,12 @@ func (r Report) warnings() []string {
 		w = append(w, fmt.Sprintf(
 			"the difference of %.2f%% does not clear the %.2f%% noise floor, which is what this setup reports between two runs of identical code",
 			r.Estimate.Delta*100, r.NoiseFloor*100))
+	}
+
+	if r.Estimate.Excludes(0) && math.Abs(r.Estimate.Delta) <= QuantizationGate*r.Quantization {
+		w = append(w, fmt.Sprintf(
+			"the difference of %.3f%% is within %.1f clock ticks per batch (one tick is %.3f%%), which rounding alone can produce; lower CollectOptions.MaxQuantizationError to lengthen the batches",
+			r.Estimate.Delta*100, QuantizationGate, r.Quantization*100))
 	}
 
 	if !r.Estimate.Excludes(0) {
