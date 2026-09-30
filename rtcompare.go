@@ -55,69 +55,42 @@ func (c Confidences) At(threshold float64) (confidence float64, ok bool) {
 // confidence estimates.
 const DefaultResamples uint64 = 5_000
 
-// CompareSamples compares two sets of scalar measurements (for example: runtimes,
-// memory footprints, or other numeric metrics) and estimates the confidence that
-// values from `measurementsA` are smaller than those from `measurementsB` by at
-// least the requested relative thresholds.
+// CompareSamples estimates, for each threshold, the confidence that the
+// measurements in A are smaller than those in B by at least that relative
+// difference, resampling A and B independently of each other.
 //
-// The function is intentionally metric-agnostic: it treats each input slice as a
-// sample of independent measurements where *smaller* values indicate a better
-// outcome (this matches runtimes or memory consumption). If you have a
-// "larger-is-better" metric (e.g., throughput), transform the inputs before
-// calling this function (for example by taking the reciprocal or negating the
-// values) so that smaller means better.
+// Parameters: measurementsA and measurementsB are two samples of the same
+// metric, smaller being better, such as runtimes or memory, each with at least
+// [MinimumDataPoints] values; for a larger-is-better metric such as
+// throughput, pass reciprocals. relativeGains are the thresholds: 0.05 asks "is
+// A at least 5% smaller than B", -0.05 "is A at most 5% larger", and an empty
+// list asks about 0. resamples is the number of bootstrap replicates, zero
+// selecting [DefaultResamples].
 //
-// For each bootstrap replicate the implementation draws a resampled population
-// from `measurementsA` and `measurementsB`, computes their medians and evaluates
-// the relative improvement as:
+// It returns one entry per distinct threshold, in ascending order, each the
+// share of replicates in which 1 - median(A*)/median(B*) reached it, or an
+// error for too few values or a NaN threshold.
 //
-//	delta = 1 - median(A_sample)/median(B_sample)
+// Use it for measurements that were not taken in pairs. For those that were,
+// such as the samples of [Collect], use [ConfidencesFor] with
+// EstimateOptions.Paired, as [Compare] does. At a threshold of zero, ties
+// count for A; ask for a small positive threshold if you mean strictly faster.
 //
-// A positive `delta` indicates that `measurementsA` are smaller than
-// `measurementsB` by that relative fraction (e.g. delta=0.2 → A is 20% smaller).
-// For each requested relative gain the function reports the fraction of replicates
-// where `delta >= threshold` as the confidence.
+// # Thresholds of zero and below
 //
-// Parameters:
+// Every threshold t is evaluated as delta >= t, so at t = 0 the question is
+// "is A at least as small as B", not "is A smaller", and replicates in which
+// both medians come out exactly equal count towards the confidence. With
+// quantized inputs such as timings that is not a rare corner case. A
+// measurement is an integer count of clock ticks divided by a batch size, so
+// distinct measurements collapse onto identical values: at this package's
+// default calibration target, an ordinary run tied in about 15% of
+// replicates, lifting the confidence at t = 0 by half that. Shrinking the
+// quantization helps; see CollectOptions.MaxQuantizationError and the tie rate
+// reported by [ValidateHarness].
 //
-//   - measurementsA, measurementsB: samples of scalar measurements (float64). Prefer
-//     measurements that share the same units and scale (e.g., both in milliseconds).
-//
-//   - relativeGains: relative improvement thresholds to evaluate (e.g. 0.05 means
-//     "A is at least 5% smaller than B"). If nil or empty, the function evaluates
-//     a single relative gain at 0.0.
-//
-//     A threshold of 0.0 deserves a word of warning, because it is the one place
-//     where the inclusive comparison bites. Every threshold is evaluated as
-//     `delta >= t`, so at t = 0 the question is "is A at least as small as B",
-//     not "is A smaller". Replicates in which both medians come out exactly equal
-//     count towards the confidence.
-//
-//     With quantized inputs such as timings, that is not a rare corner case. A
-//     measurement is an integer count of clock ticks divided by a batch size, so
-//     distinct measurements collapse onto identical values: at this package's
-//     default calibration target, an ordinary run tied in about 15% of
-//     replicates, lifting the confidence at t = 0 by half that. Ask for a
-//     threshold above zero if you mean strictly faster, or shrink the
-//     quantization; see CollectOptions.MaxQuantizationError and the tie rate
-//     reported by ValidateHarness.
-//
-//     Negative values in `relativeGains` are allowed and are interpreted as
-//     tolerated relative *slowdowns* of A vs. B. Concretely, a threshold `t < 0`
-//     is evaluated as `delta >= t` where `delta = 1 - median(A)/median(B)`. For
-//     example, `t = -0.05` corresponds to the statement "A is not more than 5% slower
-//     than B" (i.e., A is within 5% of B). A replicate with `delta = -0.03` would
-//     count as meeting `t = -0.05` because `-0.03 >= -0.05`.
-//
-//     Use negative thresholds when you want to ask whether A is *within* a relative
-//     tolerance of B rather than strictly faster. Zero remains the boundary
-//     "is A smaller than B?" and positive thresholds require A to be faster by at
-//     least that relative fraction.
-//
-//   - resamples: number of bootstrap resamples to run (larger → more precise estimates,
-//     longer runtime); zero selects [DefaultResamples]. See the note in
-//     `BootstrapConfidence` for guidance and literature references about choosing
-//     the number of resamples.
+// A negative threshold is a tolerated slowdown: t = -0.05 asks whether A is
+// within 5% of B, and a replicate with delta = -0.03 meets it.
 //
 // # Why the median
 //
@@ -151,27 +124,14 @@ const DefaultResamples uint64 = 5_000
 // interference to 3.1% at 30% and 20.5% at 40%, so a setup in which the median
 // is failing announces itself as one whose measurements are worthless anyway.
 //
-// Returns the [Confidences], one entry per requested relative threshold with
-// its confidence in [0,1]. If either input contains fewer than
-// `MinimumDataPoints` values an error is returned.
+// # Details
 //
-// The results are ordered by ascending threshold and contain one entry per
-// *distinct* threshold: passing the same value several times yields a single
-// result for it, not several. The caller's `relativeGains` slice is left
-// untouched; sorting and deduplication happen on an internal copy.
-//
-// Non-finite thresholds are treated differently from one another:
-//
-//   - NaN is rejected with an error naming its index. It cannot be answered
-//     meaningfully, since `delta >= NaN` is false for every delta, and the
-//     resulting confidence of zero would be indistinguishable from a genuine
-//     result. Watch for this when feeding [F2T] results in unchecked: F2T
-//     signals invalid input by returning NaN.
-//   - +Inf and -Inf are accepted. They are degenerate but well defined and
-//     internally consistent: `delta >= -Inf` holds for every non-NaN delta, so
-//     -Inf always yields confidence 1, and no finite delta reaches +Inf, so
-//     +Inf always yields confidence 0. They are of little practical use as
-//     thresholds, but they do not misreport anything.
+// Passing the same threshold several times yields one entry for it; the
+// caller's slice is left untouched. NaN is rejected with an error naming its
+// index, since delta >= NaN is false for every delta and the resulting zero
+// would look like a genuine answer; watch for this when passing [F2T] results,
+// since F2T signals invalid input with NaN. +Inf and -Inf are accepted and
+// consistent: -Inf always yields confidence 1 and +Inf always 0.
 func CompareSamples(measurementsA, measurementsB []float64, relativeGains []float64, resamples uint64) (Confidences, error) {
 	if len(measurementsA) < MinimumDataPoints || len(measurementsB) < MinimumDataPoints {
 		return nil, fmt.Errorf("not enough data points: need at least %d measurements for each input", MinimumDataPoints)
@@ -316,59 +276,38 @@ func bootstrapSampleCrypto(xs []float64, rng *prng.CPRNG) []float64 {
 	return sample
 }
 
-// BootstrapConfidence estimates the probability (confidence) that the relative speedup of A over B
-// meets or exceeds each requested threshold using bootstrap resampling.
+// BootstrapConfidence is [CompareSamples] with a seed and without an error
+// channel: for each threshold, the share of bootstrap replicates in which
+// 1 - median(A*)/median(B*) reached it, A and B resampled independently.
 //
-// The function performs `resamples` bootstrap replicates. In each replicate it draws a bootstrap sample
-// from A and from B (via bootstrapSample), computes their medians and evaluates the relative speedup as:
+// Parameters: A and B are the measurements; relativeGains are the thresholds,
+// as for CompareSamples; resamples is the number of replicates; prngSeed
+// makes the replicates reproducible, zero drawing them from cryptographic
+// randomness instead.
 //
-//	delta = 1 - median(A_sample)/median(B_sample)
+// It returns one entry per distinct threshold in ascending order. With
+// resamples zero every confidence is NaN, and NaN thresholds are left out,
+// since there is no error to report them with; CompareSamples rejects them.
 //
-// A positive delta indicates A is faster than B by that relative amount. For every threshold t in
-// `relativeGains` the function increments a counter when delta >= t. After all replicates it returns,
-// for each threshold, the estimated confidence: the fraction of replicates meeting delta >= t.
+// Use CompareSamples unless the seed matters, and [ConfidencesFor] for
+// measurements taken in pairs.
 //
-// Numerical and edge-case behavior (important):
-//   - If `resamples` is zero every confidence is math.NaN().
-//   - If either sample median is NaN (for an empty sample), the replicate produces delta = NaN and
-//     that replicate does not count as meeting any threshold.
-//   - A median(B_sample) of zero with a non-zero median(A_sample) gives an infinite delta, which is
-//     the honest answer and a sign that a batch fitted inside one clock tick; see relativeDelta.
-//   - If both medians are zero (or both are equal/infinite in the same direction), the replicate sets
-//     delta = 0.0 (no relative difference).
+// # Edge cases
 //
-// Parameters:
-//   - A, B: observed samples (e.g. runtimes or throughputs) used as the population for bootstrap sampling.
-//   - relativeGains: slice of relative-speedup thresholds to evaluate (e.g. 0.05 for 5% faster).
-//   - resamples: number of bootstrap resamples to run (the greater the resamples, the lower the Monte Carlo sampling error).
-//   - prngSeed: DPRNG seed used for reproducible sampling. Provide a specific non-zero seed to reproduce results across runs.
-//     If prngSeed is zero, the function uses a CPRNG with cryptographic strength randomness.
+// A replicate with an empty sample has an undefined difference and meets no
+// threshold. A median(B*) of zero with a non-zero median(A*) gives an
+// infinite difference, the honest answer and a sign that a batch fitted
+// inside one clock tick. Equal medians, zeros and like infinities included,
+// give exactly zero. Infinite thresholds are kept: -Inf always yields 1 and
+// +Inf always 0.
 //
-// Note on choosing `resamples` (literature guidance): There is no one-size-fits-all value; common
-// recommendations in the bootstrap literature (Efron & Tibshirani; Davison & Hinkley) are to use at
-// least 1,000 resamples for standard-error estimation and often 5,000–10,000 (or more) when estimating
-// percentile confidence intervals, especially for tail probabilities. The Monte Carlo error of a
-// proportion estimated from resamples decreases approximately as 1/sqrt(R) where R is the number of
-// resamples, so doubling `resamples` reduces that error by about 1/sqrt(2). For many practical uses
-// `resamples` in the range 1,000–10,000 is a reasonable default; increase it when you need precise
-// confidence estimates near extreme thresholds or when you require reproducible low-variance results.
+// # Choosing resamples
 //
-// Returns:
-//
-//	The [Confidences], one entry per distinct threshold in ascending order, each with the estimated
-//	confidence in [0,1] that the relative speedup of A over B is at least that threshold.
-//
-// Repeated thresholds are collapsed before counting, so the returned confidences
-// are always in [0,1]. Without that step a threshold listed n times would score
-// n hits per replicate and report a confidence of n. The caller's slice is not
-// modified.
-//
-// NaN thresholds are silently skipped and do not appear in the result. This
-// function has no error channel, and a NaN entry could never be found again,
-// because NaN compares equal to nothing including itself. Prefer
-// CompareSamples, which rejects NaN thresholds with a proper error.
-// Infinities are kept: they behave consistently, with -Inf mapping to 1 and
-// +Inf to 0.
+// The bootstrap literature (Efron & Tibshirani; Davison & Hinkley) recommends
+// at least 1,000 resamples for standard errors and 5,000 to 10,000 for
+// percentile intervals and tail probabilities. The Monte Carlo error of a
+// confidence shrinks as 1/sqrt(resamples), so more resamples make the same
+// answer more precise, not more correct.
 func BootstrapConfidence(A, B []float64, relativeGains []float64, resamples uint64, prngSeed uint64) Confidences {
 	// Block length one is single-observation resampling: the shared core draws
 	// exactly the values the dedicated sampler used to, in the same order.
@@ -539,6 +478,16 @@ func AutoBlockLength(n int) int {
 // observations instead of single observations, which is what makes it usable on
 // measurements that are not independent of their neighbours.
 //
+// Parameters are those of BootstrapConfidence, and blockLength is the length
+// of the blocks, zero or negative selecting [AutoBlockLength]. It returns the
+// same as BootstrapConfidence.
+//
+// Use it when the lag-1 autocorrelation of the measurements exceeds about
+// [AutocorrelationThreshold], as [ValidateHarness] reports it; [Compare]
+// switches by itself. Below that, blocks cost variance and repair nothing.
+//
+// # Background
+//
 // The ordinary bootstrap draws one observation at a time, which assumes the
 // samples are exchangeable: that the order they arrived in carries nothing. Real
 // timing measurements violate this, mildly but measurably. Correlated samples
@@ -587,6 +536,8 @@ func AutoBlockLength(n int) int {
 // this one: blocks that are too long for the dependence present are themselves
 // mildly over-dispersed, which is why the automatic length is worth preferring
 // over a guessed one.
+//
+// # Block length
 //
 // blockLength of zero selects [AutoBlockLength], and so does any negative
 // value, which has no sensible reading. A blockLength of one is the ordinary

@@ -36,7 +36,13 @@ var (
 
 // GetSampleTimePrecision returns the smallest interval that can actually be
 // measured with sampleTime() on this machine, in nanoseconds. It is determined
-// empirically on first use and cached for the lifetime of the process.
+// empirically on first use, which takes a few milliseconds, and cached for
+// the lifetime of the process.
+//
+// Use it to judge how long a batch has to run; [CalibrateInnerLoops] does,
+// and reports it as Calibration.ClockPrecision.
+//
+// # Background
 //
 // This is the practical floor of the measurement: no single timing can be
 // trusted below it, and it is the quantity that determines how long a batch has

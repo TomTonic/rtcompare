@@ -62,6 +62,18 @@ func (d DriftReport) String() string {
 // DetectDrift looks for a monotone trend across a series of measurements taken
 // in run order, such as one of the slices returned by [Collect].
 //
+// Parameters: samples is the series in the order it was measured, at least
+// four finite values; below about twenty, a real drift easily goes unnoticed.
+//
+// It returns a [DriftReport] with the trend's significance and size, which
+// are to be read separately, or an error for fewer than four samples or a
+// non-finite one.
+//
+// Use it on any series the bootstrap is about to treat as an unordered bag;
+// [Compare] runs it on both series and on their ratio.
+//
+// # Background
+//
 // This answers a question the bootstrap structurally cannot. Resampling treats
 // the samples as an unordered bag and asks how much the estimate would move if
 // they were drawn again; it discards the order in which they arrived, so a
@@ -106,10 +118,8 @@ func (d DriftReport) String() string {
 // neighbours is not something this test separates; both make the samples
 // non-exchangeable, which is what the bootstrap assumes they are.
 //
-// An error is returned for fewer than four samples, or if any sample is not
-// finite. Note that power is poor below roughly twenty samples: a real drift can
-// easily go unnoticed there, so a large PValue from a short series is weak
-// evidence of calm rather than evidence of no drift.
+// Power is poor below roughly twenty samples, so a large PValue from a short
+// series is weak evidence of calm rather than evidence of no drift.
 func DetectDrift(samples []float64) (DriftReport, error) {
 	n := len(samples)
 	if n < 4 {
@@ -306,16 +316,41 @@ func (e Estimate) String() string {
 // EstimateDifference reports how much smaller the measurements in A are than
 // those in B, as a relative fraction, with a bootstrap interval around it.
 //
-// The point estimate is computed on the measurements directly. The interval is
-// a percentile bootstrap: resample both inputs, recompute the difference for
-// each replicate, and take the empirical quantiles at (1-level)/2 and
-// (1+level)/2. Ties in the resampled distribution are handled by the quantile
-// definition below, which interpolates.
+// Parameters: A and B are the measurements, each with at least
+// [MinimumDataPoints] values and, with opt.Paired, of equal length; opt sets
+// the level, resamples, block length, seed and pairing, see
+// [EstimateOptions].
 //
-// Coverage was measured rather than assumed, by simulating pairs drawn from
+// It returns the [Estimate], or an error for too few measurements, pairs of
+// unequal length, or a level not strictly between zero and one.
+//
+// Use it when the question is how large a difference is, rather than whether
+// it clears a given threshold, which [ConfidencesFor] answers. A [Report] from
+// [Compare] can be recomputed exactly from its own samples:
+//
+//	e, err := rtcompare.EstimateDifference(r.SamplesA, r.SamplesB, rtcompare.EstimateOptions{
+//		Level: r.Estimate.Level, Resamples: r.Estimate.Resamples, BlockLength: r.BlockLength,
+//		Seed: r.Seed, Paired: true})
+//
+// The interval covers sampling uncertainty only. It says nothing about a bias
+// that affected every measurement, and a machine that drifted during the run
+// will produce a tight interval around the wrong number; read it alongside
+// [ValidateHarness] and [DetectDrift]. Nor does it cover the next process:
+// measurements from one run of a program share that run's memory layout,
+// which for large or pointer-heavy data can shift the difference far beyond
+// this interval. Pool several processes with [Combine] where that matters.
+//
+// # Coverage
+//
+// The point estimate is computed on the measurements directly. The interval is
+// a percentile bootstrap: resample, recompute the difference for each
+// replicate, and take the empirical quantiles at (1-level)/2 and (1+level)/2,
+// interpolating between neighbouring replicates.
+//
+// Coverage was measured rather than assumed, by simulating samples drawn from
 // distributions whose true difference is known and counting how often the
-// interval contained it. At a nominal 95%, over 2000 trials per cell with 1000
-// resamples, the standard error being half a point:
+// unpaired interval contained it. At a nominal 95%, over 2000 trials per cell
+// with 1000 resamples, the standard error being half a point:
 //
 //	samples per side    normal    lognormal    one-sided contamination
 //	              11     97.2%        97.0%                      96.9%
@@ -328,29 +363,9 @@ func (e Estimate) String() string {
 // nominal only slowly. The reason is discreteness: a resampled median can only
 // take values that appear in the sample, so the bootstrap distribution of the
 // median is coarser than its true sampling distribution and its quantiles sit
-// further apart. Erring wide is the safe direction, but a stated 95% is closer
-// to 96 or 97 in practice.
-//
-// The misses split evenly between the two ends, about 1.8% on each side against
-// a nominal 2.5%, so the interval is well centred and not merely shifted.
-//
-// A caveat that no interval width can express: this covers sampling
-// uncertainty only. It says nothing about a bias that affected every
-// measurement, and a machine that drifted during the run will produce a tight
-// interval around the wrong number. Read it alongside [ValidateHarness] and
-// [DetectDrift]. Nor does it cover the next process: measurements from one run
-// of a program share that run's memory layout, which for large or
-// pointer-heavy data can shift the difference far beyond this interval. Pool
-// several processes with [Combine] where that matters.
-//
-// See [EstimateOptions] for the parameters. An error is returned if either
-// input holds fewer than [MinimumDataPoints] values or if the level is not
-// strictly between zero and one.
-//
-// A [Report] from [Compare] can be recomputed exactly from its own samples:
-//
-//	e, err := rtcompare.EstimateDifference(r.SamplesA, r.SamplesB, rtcompare.EstimateOptions{
-//		Level: r.Estimate.Level, Resamples: r.Estimate.Resamples, BlockLength: r.BlockLength, Seed: r.Seed})
+// further apart. The misses split evenly between the two ends, about 1.8% on
+// each side against a nominal 2.5%, so the interval is well centred and not
+// merely shifted. For the paired interval, see EstimateOptions.Paired.
 func EstimateDifference(A, B []float64, opt EstimateOptions) (Estimate, error) {
 	opt, err := opt.resolve(A, B)
 	if err != nil {

@@ -133,28 +133,10 @@ type HarnessValidation struct {
 	// MeanConfidence and MedianConfidence split the ties instead.
 	//
 	// A high tie rate means the measurement is coarse relative to the
-	// differences being asked about. The fix is longer batches, and only longer
-	// batches. One measurement is an integer count of clock ticks divided by the
-	// batch size, so its granularity is precision/InnerLoops: raising InnerLoops
-	// makes the individual value finer and ties correspondingly rarer. Raising
-	// Repeats does not, and measurably does not; it draws more values from the
-	// same coarse set.
-	//
-	// Measured on one candidate here, holding Repeats at 51 and varying only the
-	// batch size:
-	//
-	//	InnerLoops    granularity    tie rate
-	//	     1,000     0.042 ns/op       86.3%
-	//	     5,000     0.008 ns/op       15.0%
-	//	   100,000     0.0004 ns/op       1.5%
-	//	   400,000     0.0001 ns/op       0.0%
-	//
-	// and varying only Repeats at a fixed batch size of 20,000, tie rates of
-	// 2.2%, 2.3%, 2.8% and 1.8% for 21, 51, 101 and 201 repeats: no trend.
-	//
-	// In practice the knob to turn is CollectOptions.MaxQuantizationError, which
-	// is what sizes the batch. See its documentation for what the default costs
-	// here.
+	// differences being asked about. The fix is longer batches, through
+	// CollectOptions.MaxQuantizationError, and only longer batches: more
+	// Repeats draw more values from the same coarse set. See
+	// [DefaultMaxQuantizationError] for the measurements.
 	TieRate float64
 
 	// FalseSignalRate is the fraction of runs whose confidence fell outside
@@ -288,51 +270,51 @@ type ValidationOptions struct {
 // ValidateHarness measures how much difference a setup reports between two
 // measurements of identical code, and returns it as a [HarnessValidation].
 //
-// It runs the candidate against itself through [Collect], repeatedly, using the
-// options supplied. Any difference it finds is by definition an artefact: of
-// measurement order, of drift, of the scheduler, of the collector. The result
-// is therefore the floor below which that setup cannot distinguish a real
-// difference from its own noise, and it is the honest companion to any
-// confidence figure the same setup produces.
+// Parameters: c is the candidate, measured against itself; opt holds the
+// measurement options the real comparison will use and the number of A/A
+// runs, see [ValidationOptions].
 //
-// This matters because bootstrap resampling cannot supply it. Resampling
-// quantifies how much the estimate would move if the same measurements were
-// drawn again; it cannot see a bias that affected every measurement equally, and
-// it will report a tight confidence around one. Measured on identical code, this
-// package has seen apparent differences ranging from a few tenths of a percent
-// to well over one, carried with high confidence. Only an A/A experiment
-// exposes that.
+// It returns the validation, or an error for a nil Batch, invalid options or a
+// failed calibration.
 //
-// The cost is Runs times one [Collect] plus one calibration, and rather more
-// bootstrap work than a single comparison: each run resamples twice, once in
-// each direction, because splitting ties needs the confidence both ways. The
-// resampling dominates. Measured on a candidate calibrated to 48 microsecond
-// batches, the whole validation took 0.76 s at ten runs and 3.03 s at forty, of
-// which the measurement itself was under a tenth. On top of that comes one
-// warm-up of CollectOptions.WarmupDuration, [DefaultWarmupDuration] unless set,
-// before the first run only; the later runs warm up by count alone, since the
-// candidate has been running all along.
-//
-// A worked use, and the reason the API exists: measure the noise floor first,
-// then require a real result to clear it.
-//
-// Validate both candidates, not just one: they need not be equally well
-// behaved, and a comparison is only as trustworthy as the worse of them. When
-// the two are about to be compared, validate them together with [ValidatePair]
-// rather than calling this function twice. A candidate validated on its own
-// runs alone for the whole validation and leaves the caches full of its own
-// data, so the one validated last starts the comparison warm and the other
-// cold; with a working set near the size of the last-level cache that alone has
-// produced differences of 10 to 50% between identical code.
+// Use it to find the noise floor a result has to clear. When two candidates
+// are about to be compared, validate them together with [ValidatePair]
+// instead of calling this twice: a candidate validated on its own leaves the
+// caches full of its own data, and the one validated last starts the
+// comparison warm. [Compare] does all of this; the pieces look like this:
 //
 //	va, vb, err := rtcompare.ValidatePair(fast, slow, rtcompare.ValidationOptions{Collect: opts})
 //	floor := max(va.NoiseFloor, vb.NoiseFloor)
-//
 //	sa, sb, err := rtcompare.Collect(fast, slow, opts)
-//	observed := 1 - rtcompare.Median(sa)/rtcompare.Median(sb)
-//	if math.Abs(observed) <= floor {
+//	e, err := rtcompare.EstimateDifference(sa, sb, rtcompare.EstimateOptions{Paired: true})
+//	if math.Abs(e.Delta) <= floor {
 //	    // The difference is within what this machine invents on its own.
 //	}
+//
+// # Background
+//
+// Any difference an A/A experiment finds is by definition an artefact: of
+// measurement order, of drift, of the scheduler, of the collector. The result
+// is therefore the floor below which that setup cannot distinguish a real
+// difference from its own noise. Bootstrap resampling cannot supply it: it
+// quantifies how much the estimate would move if the same measurements were
+// drawn again, cannot see a bias that affected every measurement equally, and
+// will report a tight confidence around one. Measured on identical code, this
+// package has seen apparent differences from a few tenths of a percent to well
+// over one, carried with high confidence.
+//
+// Validate both candidates, not just one: they need not be equally well
+// behaved, and a comparison is only as trustworthy as the worse of them.
+//
+// # Cost
+//
+// Runs times one [Collect] plus one calibration, and one bootstrap per run.
+// The resampling dominates: on a candidate calibrated to 48 microsecond
+// batches, the whole validation took 0.76 s at ten runs and 3.03 s at forty
+// when each run still resampled twice, of which the measurement itself was
+// under a tenth. On top of that comes one warm-up of
+// CollectOptions.WarmupDuration before the first run only; the later runs
+// warm up by count alone, since the candidate has been running all along.
 func ValidateHarness(c Candidate, opt ValidationOptions) (HarnessValidation, error) {
 	if c.Batch == nil {
 		return HarnessValidation{}, fmt.Errorf("rtcompare: candidate %s has a nil Batch function", c.label("under validation"))
