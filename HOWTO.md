@@ -43,10 +43,10 @@ the honest answer is "I can't tell, and here is why."
 
 | What you compare | Call |
 |---|---|
-| Two functions or code paths whose data fits in the CPU caches | `rtcompare.Compare` |
-| Data structures under insertions and deletions | `workload.Compare`, see [Benchmarking insertions and deletions](#benchmarking-insertions-and-deletions) |
-| Anything whose data is larger than the caches, or full of pointers (trees, linked structures, maps of heap objects) | `multiproc.Main` or `multiproc.RunTest`, see [One process is one observation](#one-process-is-one-observation) |
-| Data structures under insertions and deletions, larger than the caches | `workload.Suite` with `multiproc.MainSuite` or `multiproc.RunTestSuite` |
+| Two functions or code paths whose data fits in the CPU caches | `rtcompare.Compare`, see [the one call](API.md#the-one-call) |
+| Data structures under insertions and deletions | `workload.Compare`, see [Benchmarking insertions and deletions](#benchmarking-insertions-and-deletions) and [the workload API](API.md#workloads-for-mutable-data-structures) |
+| Anything whose data is larger than the caches, or full of pointers (trees, linked structures, maps of heap objects) | `multiproc.Main` or `multiproc.RunTest`, see [One process is one observation](#one-process-is-one-observation) and [the multiproc API](API.md#across-processes) |
+| Data structures under insertions and deletions, larger than the caches | `workload.Suite` with `multiproc.MainSuite` or `multiproc.RunTestSuite`, see both sections above |
 
 "Fits in the caches" means, as a rule of thumb, well below 16 MB of live data
 for both candidates together; `Compare` warns above that. Why the size decides:
@@ -96,6 +96,32 @@ matter most:
 
 Printing `report` gives you a short summary; the sections below explain what
 each part of it means and, more usefully, what to do about it.
+
+### Reading the printed report
+
+```
+A: 712.7 ns per operation (median)
+B: 1262 ns per operation (median)
+A needs 43.5% less time than B: B takes 1.77 times as long as A.
+With 95% confidence the difference lies between 42.3% and 44.5% less time (B takes between 1.73 and 1.80 times as long as A).
+Noise floor: 1.76%. Identical code measured against itself on this setup can look that different, so smaller differences mean nothing.
+Neighbouring measurements are correlated (autocorrelation +0.34), so they were resampled in blocks of 5.
+
+Verdict: RESOLVED. A is faster than B: the difference is real, as its interval excludes zero and it exceeds the noise floor.
+
+Warnings:
+  - candidate B drifted during the run: its measurements were 7.12% lower in the second half than in the first, so the machine did not hold still
+
+Confidence that A needs at least 5% less time than B: 100.0%
+```
+
+- **The first two lines** are the median cost of one operation of each candidate, in nanoseconds.
+- **The next two** are the answer: the difference as a share of B's time, and an interval that says how precisely that is known. Read the interval, not just the first number: "43.5%" with an interval of 42.3% to 44.5% is a solid finding, while "5%" with an interval from -3% to +13% is not.
+- **The noise floor** is what your own setup invents: run identical code against itself and it reports differences up to this size. A difference below it means nothing, however confident it looks. See [Step 2](#step-2--find-out-what-your-own-machine-invents-from-nothing).
+- **The autocorrelation line** says how the interval was computed. You need not act on it; see [Step 5](#step-5--check-whether-measurements-depend-on-their-neighbors).
+- **The verdict** is `RESOLVED` when the interval excludes zero and the difference exceeds the noise floor, and `NOT RESOLVED` otherwise. Not resolved does not mean equally fast; see [What "not resolved" does and does not mean](#what-not-resolved-does-and-does-not-mean).
+- **The warnings** are everything that weakens the result. Read them even when the verdict is `RESOLVED`; [Troubleshooting](#troubleshooting-what-to-do-when) says what to do about each.
+- **The confidence lines** appear when you asked for thresholds: how sure the run is that A needs at least that much less time than B.
 
 If `Compare`'s defaults don't fit your case — you need a specific number of
 repeats, you want to skip validation to save time, you're comparing something

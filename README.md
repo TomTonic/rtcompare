@@ -6,63 +6,34 @@
 ![coverage](https://raw.githubusercontent.com/TomTonic/rtcompare/badges/.badges/main/coverage.svg)
 [![Vulnerabilities](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/TomTonic/cbfad7cf38e139ba898fe41386efa4db/raw/release_scan.json)](https://gist.github.com/TomTonic/cbfad7cf38e139ba898fe41386efa4db#file-release_scan-md)
 
-## Statistically significant runtime comparison for codepaths in golang
+## Benchmark two code paths and know whether the difference is real
 
-rtcompare is a small Go library for deciding whether one code path is genuinely faster than another. It measures both candidates, resamples the measurements to estimate how confident that conclusion is, and — the part that distinguishes it — measures what the machine invents on its own so that the conclusion can be read against it.
-
-New to this and not a statistics person? **[Read HOWTO.md](HOWTO.md)** — it walks through what to actually do, in plain language, including what each warning means and what to do about it.
+rtcompare answers one question: **is A really faster than B, and by how much?** Benchmarking that well means dodging a long list of traps, and this library deals with each of them for you, statistical significance included. One call, `rtcompare.Compare`, returns a verdict together with the fine print that qualifies it. You do not need to know statistics to use it; when it warns you, [HOWTO.md](HOWTO.md) explains in plain language what the warning means and what to do.
 
 Keywords: benchmarking, performance, bootstrap, runtime comparison, statistics, deterministic prng, go
 
-## Which call do I need?
+## What goes wrong when you compare two benchmarks, and what rtcompare does about it
 
-| What you compare | Call |
+| The problem | What rtcompare does |
 |---|---|
-| Two functions or code paths whose data fits in the CPU caches | `rtcompare.Compare` |
-| Data structures under insertions and deletions | `workload.Compare` |
-| Anything whose data is larger than the caches, or full of pointers (trees, linked structures, maps of heap objects) | `multiproc.Main` or `multiproc.RunTest` |
-| Data structures under insertions and deletions, larger than the caches | `workload.Suite` with `multiproc.MainSuite` or `multiproc.RunTestSuite` |
+| The clock is coarse. A single call to a fast function is below its resolution. | Sizes the batches automatically so the clock contributes at most a chosen share of error. Differences far below the clock's resolution become measurable. |
+| Whichever code runs second finds warm caches, or the other way round. | Interleaves the two candidates, alternates who goes first, and warms both up together. |
+| Setup and garbage collection leak into the numbers. | Keeps setup outside the measured region and places GC deterministically. |
+| Two runs of *identical* code differ. A "10% win" may be less than what the machine invents on its own. | Measures that noise floor by running each candidate against itself, and tells you whether the result clears it. |
+| The machine drifts during the run: thermal throttling, a busy neighbour, a suspended laptop. | Tests every run for a trend and for suspension, and warns. |
+| "A is 12% faster" from one run says nothing about how sure you can be. | Bootstrap resampling gives an interval and the confidence that A beats B by at least the margin you care about, with the dependence between neighbouring samples taken into account. |
+| Big or pointer-heavy data: where it happens to sit in memory moves the result by several points, and a new process gets a new layout. | `multiproc` runs the comparison in several processes and pools them, so the interval covers that scatter too. |
+| Trees, maps and other structures behave differently under insertions and deletions than under a fixed input. | `workload` generates realistic, reproducible insert/delete streams and compares structures under them. |
 
-"Fits in the caches" means, as a rule of thumb, well below 16 MB of live data for both candidates together; `Compare` warns above that. The reason for the last two rows: for large or pointer-heavy data, where the data happens to lie in memory moves the result by several points, is fixed for the life of a process and different in the next one. A single process then reports a narrow interval around a number the next process does not confirm. `multiproc` runs the comparison in several processes and pools them, treating each process as one observation. See [One process is one observation](HOWTO.md#one-process-is-one-observation).
-
-## Features
-
-- Answer the whole question in one call: `Compare` sizes the batches, measures what the harness invents on its own, runs the comparison, tests for drift, picks the resampling scheme from the dependence it observed, and reports a verdict with the fine print that qualifies it.
-- Collect timing or memory samples for two implementations under a harness that interleaves their measurement order, keeps setup out of the measured region, and places garbage collection deterministically.
-- Size batches automatically, so that the system clock contributes at most a chosen share of error. This is what makes differences far below the clock's resolution measurable: a per-operation difference of 1.89 ns was recovered to within 0.07 percentage points against a 41 ns clock floor.
-- Estimate, by bootstrap resampling, the confidence that A beats B by at least a given relative margin.
-- Measure the harness against itself, so that a result can be compared with the difference the same setup reports between two runs of identical code.
-- Detect a trend across a measurement run, which resampling structurally cannot see because it discards the order the samples arrived in.
-- Resample in blocks when the measurements are correlated enough that treating them as independent would overstate confidence.
-- Run a comparison in several processes, each with its own heap layout, and pool the results into an interval that covers the scatter between processes (`multiproc`, `Combine`, `PerturbHeap`).
-- Deterministic PRNG for reproducible inputs, and a crypto/rand-backed one where unpredictability is wanted.
-- Compare mutable data structures under realistic insert/delete workloads in one call (`workload`), with separate answers for the steady state and for building to size; the streams are valid by construction, reproducible from a seed, and cyclic, so that a batch can replay them endlessly without rebuilding the structure.
-
-## What this cannot tell you
-
-Two limits are worth knowing before the first run, because neither is visible in a confidence figure.
-
-**Attenuation.** What is measured is the loop, not the function. Whatever fixed per-operation cost the batch body carries — the loop itself, an accumulator, regenerating an input the candidate mutates — is present in both candidates and shrinks the difference between them. In a controlled experiment where the true difference was exactly 50%, the measured difference was 35%, because 1.81 ns/op of loop overhead sat on top of 2.13 ns/op of real work. Subtracting an empty-loop baseline does not repair it: the compiler optimizes an empty loop differently, and that correction recovered 2 of the 15 missing percentage points. Read a result as the speedup of the measured region, not of the isolated function.
-
-**The process.** Every interval a single run reports covers the noise within that one process. A process fixes its memory layout for its whole life, and for data larger than the caches or full of pointers that layout alone has moved a difference by several points — 4 to 10 times the reported interval, and sometimes past zero. Where that applies, one process is one observation: run several with the `multiproc` package and read the pooled result. See [One process is one observation](HOWTO.md#one-process-is-one-observation).
-
-**The noise floor.** Resampling quantifies how much an estimate would move if the same measurements were drawn again. It cannot see a bias that affected all of them equally, and will report a tight confidence around one. Measured on identical code, this package has seen apparent differences from a few tenths of a percent to well over one, carried with high confidence. `ValidateHarness` exists to measure that floor for your machine and your options; a result below it has resolved nothing, however confident the number looks.
+It is more machinery than `testing.B`, and that is the point: `testing.B` gives you a number and leaves the question of whether two numbers really differ to you. rtcompare is for when the answer matters, for example to decide whether a rewrite is worth merging, to gate a pull request in CI, or to defend a claim in a paper. It is not a replacement for profiling, and the standard `testing` package remains the right tool for a quick look at a single function.
 
 ## Install
-
-Use as a normal Go module dependency:
 
 ```shell
 go get github.com/TomTonic/rtcompare
 ```
 
-Import:
-
-```go
-import "github.com/TomTonic/rtcompare"
-```
-
-## Quickstart example
+## Quickstart
 
 ```go
 package main
@@ -107,124 +78,44 @@ func main() {
 which prints something like
 
 ```
-A 712.7 per op, B 1262 per op
-difference +43.52% [+42.31%, +44.48%] at 95% confidence; B/A 1.771× [1.733×, 1.801×]
-noise floor 1.765%, autocorrelation +0.344, resampled in blocks of 5
-resolved: A is faster than B
-  warning: candidate B drifted during the run, shifting -7.12% from its first
-  half to its second; the machine did not hold still
-  confidence that A beats B by 5.00%: 100.0%
+A: 712.7 ns per operation (median)
+B: 1262 ns per operation (median)
+A needs 43.5% less time than B: B takes 1.77 times as long as A.
+With 95% confidence the difference lies between 42.3% and 44.5% less time (B takes between 1.73 and 1.80 times as long as A).
+Noise floor: 1.76%. Identical code measured against itself on this setup can look that different, so smaller differences mean nothing.
+Neighbouring measurements are correlated (autocorrelation +0.34), so they were resampled in blocks of 5.
+
+Verdict: RESOLVED. A is faster than B: the difference is real, as its interval excludes zero and it exceeds the noise floor.
+
+Warnings:
+  - candidate B drifted during the run: its measurements were 7.12% lower in the second half than in the first, so the machine did not hold still
+
+Confidence that A needs at least 5% less time than B: 100.0%
+Confidence that A needs at least 10% less time than B: 100.0%
+Confidence that A needs at least 20% less time than B: 100.0%
 ```
 
-`Compare` validates both candidates against themselves before comparing them, so it costs a few seconds. Set `SkipValidation` to pay only for the measurement, accepting that the result then has no noise floor to be read against. The individual steps are all exported too, and `cmd/rtcompare-example` shows both: the one call, and then the same measurements taken apart by hand.
+[HOWTO.md](HOWTO.md#reading-the-printed-report) explains each line and what to do about a warning.
 
-Not sure what a warning like "resampled in blocks" or "does not clear the noise floor" means, or what to do about it? **[HOWTO.md](HOWTO.md)** goes through each step `Compare` performs and each warning it can produce, with a plain-language explanation and a concrete fix.
+`Compare` validates both candidates against themselves before comparing them, so it costs a few seconds. Set `SkipValidation` to pay only for the measurement, accepting that the result then has no noise floor to be read against. `cmd/rtcompare-example` shows the one call, and then the same measurements taken apart by hand.
 
-## Technical background
+## Which call do I need?
 
-- **Batching is what beats the clock.** A single batch measurement is off by at most one clock tick `p`. Spread over `n` operations that is `p/n` per operation, so the relative error is `p/(n·c)` where `c` is one operation's cost. Since `n·c` is just the batch duration `T`, the whole thing collapses to `p/T`: the error depends only on how long a batch runs, not on how fast the operation is. `CalibrateInnerLoops` therefore searches for the smallest batch that reaches a target duration, which is why an expensive operation can calibrate to a batch of two while a cheap one needs thirteen thousand.
+| What you compare | Call | Details |
+|---|---|---|
+| Two functions or code paths whose data fits in the CPU caches | [`rtcompare.Compare`](https://pkg.go.dev/github.com/TomTonic/rtcompare#Compare) | [The five-minute version](HOWTO.md#the-five-minute-version) |
+| Data structures under insertions and deletions | [`workload.Compare`](https://pkg.go.dev/github.com/TomTonic/rtcompare/workload#Compare) | [Benchmarking insertions and deletions](HOWTO.md#benchmarking-insertions-and-deletions) |
+| Anything whose data is larger than the caches, or full of pointers (trees, linked structures, maps of heap objects) | [`multiproc.Main`](https://pkg.go.dev/github.com/TomTonic/rtcompare/multiproc#Main) or [`multiproc.RunTest`](https://pkg.go.dev/github.com/TomTonic/rtcompare/multiproc#RunTest) | [One process is one observation](HOWTO.md#one-process-is-one-observation) |
+| Data structures under insertions and deletions, larger than the caches | [`workload.Suite`](https://pkg.go.dev/github.com/TomTonic/rtcompare/workload#Suite) with [`multiproc.MainSuite`](https://pkg.go.dev/github.com/TomTonic/rtcompare/multiproc#MainSuite) or [`multiproc.RunTestSuite`](https://pkg.go.dev/github.com/TomTonic/rtcompare/multiproc#RunTestSuite) | [Benchmarking insertions and deletions](HOWTO.md#benchmarking-insertions-and-deletions), then [One process is one observation](HOWTO.md#one-process-is-one-observation) |
 
-- **Pairs, not two separate bags.** `Collect` measures A and B in pairs, next to each other. `Compare` takes the difference from the ratio of each pair, 1 − median(Aᵢ/Bᵢ), and resamples whole pairs, so that a disturbance that hits both members of a pair, such as the clock speed changing, cancels instead of widening the interval. On memory-bound candidates that made the intervals 25–38% narrower; with disturbances common to both members, simulated, the unpaired interval covered at 99–100% for a nominal 95% at up to five times the width, while the paired one held 94–95%.
+"Fits in the caches" means, as a rule of thumb, well below 16 MB of live data for both candidates together; `Compare` warns above that. The reason for the last two rows is explained in [One process is one observation](HOWTO.md#one-process-is-one-observation).
 
-- **Bootstrap-based inference.** Rather than a single mean, rtcompare resamples the collected measurements. `CompareSamples` answers "how confident can I be that A beats B by at least x", which is what you want when a threshold is given. `EstimateDifference` answers "how large is the difference and how precisely is that known", which is what you want when none is. Its interval is a percentile bootstrap, measured to cover at 96–97% against a nominal 95%: conservative rather than optimistic, and well centred.
+## Where to go next
 
-- **Why the median.** Each replicate is summarised by its median. Interference is one-sided, which argues for a low quantile instead, but simulation against a known difference says otherwise: below roughly 30% disturbed batches the median wins on RMSE, because with contamination on fewer than half the samples the middle one is already drawn from the clean part. Past 40% the median degrades sharply — and so does the noise floor `ValidateHarness` reports, from 1.2% to 20.5%, so that regime announces itself.
-
-- **What resampling cannot see.** The bootstrap treats the samples as an unordered bag, which discards the order they were measured in. A machine that drifted during the run leaves no trace in its output. `DetectDrift` tests for that separately, using Spearman's rank correlation against measurement position; its false positive rate was verified at 4.80% against a nominal 5% over 6000 permutations of real measurement series.
-
-- **Dependence between neighbouring measurements.** Resampling single observations also assumes they are exchangeable, and real measurements are mildly correlated. In AR(1) simulations the rate of false signals from identical inputs stayed at its nominal 10% up to a lag-1 correlation of 0.08, reached 13.5% at 0.2 and 21.7% at 0.4. `ValidateHarness` reports the correlation it observed; above roughly 0.2, `BlockBootstrapConfidence` resamples contiguous blocks instead.
-
-- **Deterministic input generation.** `DPRNG` generates reproducible inputs across runs. `CPRNG`, backed by [crypto/rand](https://pkg.go.dev/crypto/rand), is there when unpredictability or cryptographic quality is wanted instead.
-
-## When to use rtcompare instead of `testing.B`
-
-Use rtcompare when you want:
-
-- Distribution-aware comparisons rather than single-number reports.
-- Statistical confidence estimates for relative speedups (e.g., "A is at least 20% faster than B with 95% confidence").
-- A library you can easily call from small programs, CI jobs, or dedicated comparison tools without the `testing` harness.
-
-The standard `testing` package is excellent for microbenchmarks and tight per-op measurements. rtcompare complements it by focusing on sampling strategy, resampling inference, and reproducible comparisons across implementations.
-
-## API highlights
-
-The one call:
-
-- `Compare(a, b, CompareOptions)` — runs the whole protocol and returns a `Report`. `Report.Resolved` is the short answer, `Report.Warnings` is the fine print, and the rest of the struct is the evidence: the samples, the estimate, the per-candidate validations, the drift tests and the resampling choice.
-- `CompareContext(ctx, a, b, CompareOptions)` — the same, stopping between batches once `ctx` is done. `CompareOptions.Progress` reports the stages and each validation run, and `CompareOptions.MaxDuration` stops the validation, the dominant cost, from starting more runs once half the budget is gone.
-
-The individual steps, for when the summary is not enough:
-
-Measuring:
-
-- `Candidate` / `Batch` — one implementation under test, with optional `Setup` and `Teardown` that run outside the measured region.
-- `Collect(a, b, CollectOptions)` — runs both candidates and returns one timing sample per repeat each, ready to hand to `CompareSamples`. Owns measurement order, warm-up, GC placement and batch sizing. The warm-up alternates the candidates for at least `WarmupDuration` (300 ms by default), so that neither starts the measurement with the caches to itself.
-- `CalibrateInnerLoops(candidate, CalibrationOptions)` — sizes batches for a target quantization error. Called automatically when `CollectOptions.InnerLoops` is left at zero.
-
-Judging:
-
-- `CompareSamples(a, b, relativeGains, resamples)` — confidence per requested relative speedup, as `Confidences`, a list sorted by threshold whose `At(threshold)` looks one up. Zero resamples select `DefaultResamples`.
-- `EstimateDifference(a, b, EstimateOptions)` — the point estimate of the relative difference with a bootstrap interval around it, and with a `Seed` reproducibly. `Excludes(0)` asks whether a difference has been established at all, and `Ratio()` gives the factor B/A.
-- `ConfidencesFor(a, b, thresholds, EstimateOptions)` — the confidences drawn from exactly the replicates `EstimateDifference` reads its interval from; with `Paired` for measurements taken in pairs, as `Report`'s are.
-- `BootstrapConfidence` — the confidences of `CompareSamples`, for unpaired measurements, with control over the PRNG seed.
-- `BlockBootstrapConfidence` — resamples contiguous blocks, for measurements correlated with their neighbours.
-- `F2T(timesFaster)` — converts a multiplicative speedup to the relative threshold the API uses. It signals invalid input by returning NaN, which `CompareSamples` rejects with an error rather than silently answering.
-
-Checking the measurement itself:
-
-- `ValidateHarness(candidate, ValidationOptions)` — runs a candidate against itself and reports the noise floor, the tie rate, the drift rate and the autocorrelation. `Resolves(difference)` answers whether a result clears that floor. The floor is the 90th percentile of the differences observed on identical code, not their maximum, so that it converges as you validate longer instead of growing; roughly one A/A run in ten exceeds it. Validate both candidates and use the worse floor.
-- `ValidatePair(a, b, ValidationOptions)` — validates two candidates together, interleaved batch by batch, and returns one `HarnessValidation` each. Use it instead of two `ValidateHarness` calls before comparing the two: a candidate validated on its own last would start the comparison with a warm cache.
-- `DetectDrift(samples)` — tests a sample series for a trend across the run.
-- `Report.Suspended` — how long the machine slept during a `Compare`, from the gap between the wall clock and the monotonic clock.
-- `Report.LiveHeap` — the program's live data; above 16 MB, `Compare` warns that one process is not enough and points to `multiproc`.
-
-Across processes:
-
-- `multiproc.Main(Options, pairs...)` / `multiproc.RunTest(t, Options, pairs...)` — the whole job in one call: each `Pair` says how to build candidate A and B, and the program is re-executed as child processes, each with its own heap layout and with the build order alternating, as many times as the first 6 processes show every pooled interval needs to be within ±2 points or ±10% of the difference (at most 40 processes serially). `Options.Parallel` runs the children in waves instead, see below. `multiproc.MainSuite(Options, suite)` and `multiproc.RunTestSuite(t, Options, suite)` take a suite instead, such as `workload.Suite`, and `multiproc.Suites(...)` combines several; `multiproc.Run(Options, suite)` is the general form underneath.
-- `Combine(reports, level)` — pools per-process reports of one comparison into a `Pooled` result: a t interval over the per-process deltas, plus how far the processes scatter beyond their own intervals (`Inflation`, Cochran's Q, I²).
-- `PerturbHeap(seed)` — allocates seeded filler in every small size class and one large block, so that data built afterwards lands at different addresses in each process.
-
-Primitives:
-
-- `DPRNG` / `CPRNG` — deterministic and cryptographic generators with `Uint64`, `Float64`, `Uint32N`, `Shuffle` and the sized integer and `Float32` methods. `NewDPRNG(seed)` gives every non-zero seed its own fixed sequence; seed `0` asks for a random one. `Shuffle` permutes, e.g. the order in which fixtures are built.
-- `GetSampleTimePrecision()` — the smallest interval the clock resolves here.
-- `Median` — the median, the mean of the two middle values for an even count.
-
-Workloads for mutable data structures (`github.com/TomTonic/rtcompare/workload`):
-
-- `workload.Compare(target, a, b, Options)` — the whole job in one call: each `Structure` says how to create an empty structure and apply operations to it, and you get two reports, one for the steady state (per insertion or deletion, after one untimed cycle) and one for building from empty (per whole build, growth included).
-- `workload.Cycle(target, Config)` / `workload.Build(target, Config)` — the streams: a cycle of insertions and deletions that ends where it started, and a build from empty with a realistic history.
-- `workload.Replay` — replays a cycle on one structure instance, with the untimed first pass, and `Settle` to return it to its start state. `workload.Cursor` is the bare position, for doing it by hand.
-- `workload.Check(ops, start, end)` — replays a stream against a model and reports the first invalid operation.
-- `workload.Suite(name, target, a, b, Options)` — the same comparison for `multiproc.MainSuite` / `multiproc.RunTestSuite`, run in several processes with both answers pooled; the one to use once the structures outgrow the caches.
-
-### Serial or parallel processes
-
-`multiproc` runs its children one after another by default, each with the machine to itself. `Options.Parallel: N` runs N at a time, in waves, and budgets 10 waves by default. Out of cache that is usually the only way to a precise answer in reasonable time: the variance of the pooled estimate is roughly σ²_between/P + σ²_within/(P·R) for P processes of R samples, the first term dominates by far, and only more processes reduce it. Running them simultaneously multiplies P per hour by N.
-
-Parallel runs measure a loaded machine: the children share the last-level cache, memory bandwidth and clock headroom, like a program with neighbours in production. That is legitimate, but it is a different regime, so never pool or compare its results with a serial run's; `Results.Parallel` records which one ran. Keep N at or below the number of physical cores, since two children on SMT siblings share L1 and L2 and disturb each other far more than neighbours on separate cores. Each child gets `GOMAXPROCS` = CPUs/N (at least 2) unless you set it yourself.
-
-A note on the threshold of `0.0`: every threshold is evaluated as `delta >= t`, so at zero the question is "at least as fast", not "faster". Quantized timings tie often, and every tie counts towards it. Ask for a threshold above zero if you mean strictly faster.
-
-Note on negative `relativeGains`: Negative thresholds are allowed and are
-interpreted as tolerated relative slowdowns rather than speedups. A threshold
-of `-0.05` means "A is within 5% of B" (i.e., A is not more than 5% slower
-than B). Use negative values when you want to ask whether one implementation
-is approximately as fast as another within a relative tolerance instead of
-requiring a strict speedup.
-
-### Choosing `resamples`
-
-The number of bootstrap resamples controls the Monte‑Carlo error of the confidence estimates. Common recommendations from the bootstrap literature (Efron & Tibshirani; Davison & Hinkley) are:
-
-- Use at least 1,000 resamples for reasonable standard-error estimation.
-- Use 5,000–10,000 when you need stability in the tails, which here means confidences close to 0 or 1.
-
-Both quantities this package computes have that Monte-Carlo behaviour: the proportion of replicates meeting a threshold, and the quantiles of the resampled differences that `EstimateDifference` uses for its interval.
-
-The Monte‑Carlo standard error of a proportion estimated from resamples decreases approximately as 1/sqrt(R) where R is the number of resamples. Increase `resamples` when you require low Monte‑Carlo noise (for example, precise reporting of extreme thresholds). See Efron & Tibshirani (1993) and Davison & Hinkley (1997) for more details.
-
-See the package docs and the example in `cmd/rtcompare-example` for detailed usage.
+- **[HOWTO.md](HOWTO.md)**: what to do, step by step, in plain language: how to write a `Batch`, what each warning means, and how to fix it.
+- **[API.md](API.md)**: everything the library exports, and when to reach for each part.
+- **[BACKGROUND.md](BACKGROUND.md)**: why it works the way it does, with the measurements behind each choice, and what a result cannot tell you (in particular: you measure the loop, not the isolated function).
+- **[pkg.go.dev](https://pkg.go.dev/github.com/TomTonic/rtcompare)**: the reference.
 
 ## Contributing
 

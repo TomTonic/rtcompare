@@ -240,32 +240,28 @@ const (
 // String renders the report as a short multi-line summary.
 func (r Report) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "A %.4g per op, B %.4g per op\n", r.NsPerOpA, r.NsPerOpB)
-	fmt.Fprintf(&b, "difference %s\n", r.Estimate)
-
-	if r.Validated {
-		fmt.Fprintf(&b, "noise floor %.3f%%, autocorrelation %+.3f", r.NoiseFloor*100, r.Autocorrelation)
-	} else {
-		fmt.Fprintf(&b, "noise floor not measured, autocorrelation %+.3f", r.Autocorrelation)
-	}
-	if r.BlockLength > 1 {
-		fmt.Fprintf(&b, ", resampled in blocks of %d", r.BlockLength)
-	}
+	fmt.Fprintf(&b, "A: %.4g ns per operation (median)\nB: %.4g ns per operation (median)\n", r.NsPerOpA, r.NsPerOpB)
+	b.WriteString(differenceLines(r.Estimate.Delta, r.Estimate.Low, r.Estimate.High, r.Estimate.Level))
 	b.WriteString("\n")
 
-	switch {
-	case r.Resolved && r.Estimate.Delta > 0:
-		b.WriteString("resolved: A is faster than B\n")
-	case r.Resolved:
-		b.WriteString("resolved: A is slower than B\n")
-	default:
-		b.WriteString("not resolved: this run did not establish a difference\n")
+	if r.Validated {
+		fmt.Fprintf(&b, "Noise floor: %s. Identical code measured against itself on this setup can look that different, so smaller differences mean nothing.\n", percent(r.NoiseFloor))
+	} else {
+		b.WriteString("Noise floor: not measured.\n")
 	}
-	for _, w := range r.Warnings {
-		fmt.Fprintf(&b, "  warning: %s\n", w)
+	if r.BlockLength > 1 {
+		fmt.Fprintf(&b, "Neighbouring measurements are correlated (autocorrelation %+.2f), so they were resampled in blocks of %d.\n", r.Autocorrelation, r.BlockLength)
+	} else {
+		fmt.Fprintf(&b, "Neighbouring measurements are nearly independent (autocorrelation %+.2f), so they were resampled one by one.\n", r.Autocorrelation)
+	}
+
+	b.WriteString("\n" + verdictLine(r.Resolved, r.Estimate.Delta, r.Validated, "This run") + "\n")
+	b.WriteString(warningLines(r.Warnings))
+	if len(r.Confidence) > 0 {
+		b.WriteString("\n")
 	}
 	for _, c := range r.Confidence {
-		fmt.Fprintf(&b, "  confidence that A beats B by %.2f%%: %.1f%%\n", c.Threshold*100, c.Confidence*100)
+		fmt.Fprintf(&b, "Confidence that A needs %s: %.1f%%\n", thresholdPhrase(c.Threshold), c.Confidence*100)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -634,8 +630,8 @@ func (r Report) warnings() []string {
 	}{{"A", r.DriftA}, {"B", r.DriftB}} {
 		if d.rep.N > 0 && d.rep.Drifted(DriftLevel) && math.Abs(d.rep.RelativeShift) > r.resolution() {
 			w = append(w, fmt.Sprintf(
-				"candidate %s drifted during the run, shifting %+.2f%% from its first half to its second; the machine did not hold still",
-				d.name, d.rep.RelativeShift*100))
+				"candidate %s drifted during the run: its measurements were %s in the second half than in the first, so the machine did not hold still",
+				d.name, drift(d.rep.RelativeShift)))
 		}
 	}
 
@@ -643,9 +639,9 @@ func (r Report) warnings() []string {
 	// candidate was warmer than the other for part of the run.
 	if d := r.DriftRatio; d.N > 0 && d.Drifted(DriftLevel) && math.Abs(d.RelativeShift) > r.resolution() {
 		w = append(w, fmt.Sprintf(
-			"the ratio B/A shifted %+.2f%% from the first half of the run to the second, so the candidates had not reached a steady state and the difference depends on how long the run was; "+
+			"the ratio B/A was %s in the second half of the run than in the first, so the candidates had not reached a steady state and the difference depends on how long the run was; "+
 				"a common cause is a head start for whichever candidate ran alone last before the comparison or had its data built last, which a longer CollectOptions.WarmupDuration removes",
-			d.RelativeShift*100))
+			drift(d.RelativeShift)))
 	}
 
 	if r.Validated && r.ValidationA.Runs < r.requestedRuns {
