@@ -788,3 +788,51 @@ func TestCompareMaxDurationCutsTheValidationShort(t *testing.T) {
 		})
 	}
 }
+
+// TestCompareDoesNotResolveOneClockTick checks the case that fooled a CI
+// runner: batches short enough that most pairs tie put the median ratio on a
+// lattice one clock tick apart, and a difference of one tick came out with an
+// interval excluding zero, for identical code. A difference within
+// QuantizationGate ticks must not resolve and must say why; a larger one, or
+// one measured with a finer clock, still resolves.
+func TestCompareDoesNotResolveOneClockTick(t *testing.T) {
+	ciRunner := Report{
+		Estimate:     Estimate{Delta: 0.00074, Low: 0.00073, High: 0.0014, Level: 0.95},
+		Validated:    true,
+		NoiseFloor:   0.00073,
+		Quantization: 0.00073,
+	}
+	cases := []struct {
+		name         string
+		delta        float64
+		quantization float64
+		want         bool
+	}{
+		{"does not resolve one tick", 0.00074, 0.00073, false},
+		{"does not resolve just under a tick and a half", 0.00109, 0.00073, false},
+		{"resolves two ticks", 0.0015, 0.00073, true},
+		{"resolves one tick of a coarse clock when the batches are long", 0.00074, 0.0001, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := ciRunner
+			r.Estimate.Delta, r.Estimate.Low = c.delta, c.delta*0.99
+			r.Quantization = c.quantization
+			if got := r.resolves(); got != c.want {
+				t.Errorf("resolved %v, want %v", got, c.want)
+			}
+			warned := strings.Contains(strings.Join(r.warnings(), "\n"), "clock ticks per batch")
+			if warned == c.want {
+				t.Errorf("tick warning %v for a difference that resolves %v", warned, c.want)
+			}
+		})
+	}
+
+	real, err := Compare(scaledCandidate("x1", 1), scaledCandidate("x2", 2), fastCompare())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !(real.Quantization > 0 && real.Quantization < 0.01) {
+		t.Errorf("quantization %v is not the share of one tick in a batch", real.Quantization)
+	}
+}

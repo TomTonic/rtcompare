@@ -764,7 +764,11 @@ function yourself.
 ### The tie rate is high
 
 **Symptom:** `HarnessValidation.TieRate` (or a warning on the `Report`
-mentioning "bootstrap replicates tied") is above a few percent.
+mentioning "bootstrap replicates tied") is above a few percent, or a warning
+says the difference is "within 1.5 clock ticks per batch". In the second case
+`Compare` does not count the difference as resolved: one clock tick per batch
+(`Report.Quantization`) is the step by which measured differences move, and a
+difference of one step can be rounding alone.
 
 **What it means:** two measurements are landing on *exactly* the same
 number often enough to matter. This happens when your batches are too short
