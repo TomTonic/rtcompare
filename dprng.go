@@ -1,11 +1,8 @@
-// Package prng provides the two random number generators rtcompare uses: a
-// fast deterministic one, [DPRNG], for reproducible inputs, seeds and
-// resampling, and a buffered cryptographic one, [CPRNG], where unpredictability
-// matters more than speed or reproducibility.
-package prng
+package rtcompare
 
 import (
 	"math/bits"
+	"math/rand/v2"
 )
 
 // DPRNG is a deterministic pseudo-random number generator, xorshift64* with
@@ -26,17 +23,31 @@ type DPRNG struct {
 // scrambler is Vigna's multiplier for the 12/25/27 xorshift.
 const scrambler = uint64(0x2545F4914F6CDD1D)
 
-// NewDPRNG returns a generator seeded with seed.
+// NewDPRNG returns a generator seeded with seed, or with a random seed if seed
+// is zero.
 //
-// Parameters: seed is any value, zero included; every seed gives its own fixed
-// sequence. The seed is spread over all 64 bits with one round of splitmix64
-// before use, so that small or consecutive seeds, such as process indices,
-// start unrelated sequences rather than neighbouring states of the same one.
+// Parameters: seed selects the sequence: the same non-zero seed always gives
+// the same one. Zero asks for a random seed instead, drawn from math/rand/v2,
+// so that NewDPRNG(0) differs from run to run. If you compute the seed and it
+// may come out zero while you need reproducibility, pass seed|1 or another
+// non-zero mapping. The seed is spread over all 64 bits with one round of
+// splitmix64 before use, so that small or consecutive seeds, such as process
+// indices, start unrelated sequences rather than neighbouring states of the
+// same one.
 //
-// Use it wherever a sequence has to be repeatable. For a sequence that should
-// differ from run to run, seed it from a random source, e.g.
-// NewDPRNG(rand.Uint64()) with math/rand/v2.
+// Use it wherever a sequence has to be repeatable, or, with zero, wherever a
+// different sequence per run is wanted without ceremony.
 func NewDPRNG(seed uint64) DPRNG {
+	if seed == 0 {
+		seed = rand.Uint64()
+	}
+	return newDPRNG(seed)
+}
+
+// newDPRNG is the deterministic constructor behind NewDPRNG: every seed,
+// zero included, gives its own fixed sequence. Internal code whose seeds are
+// options that must reproduce (zero being a legitimate value) uses it directly.
+func newDPRNG(seed uint64) DPRNG {
 	z := seed + 0x9E3779B97F4A7C15
 	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
 	z = (z ^ (z >> 27)) * 0x94D049BB133111EB
@@ -56,6 +67,38 @@ func (thisState *DPRNG) Uint64() uint64 {
 	x ^= x >> 27
 	thisState.state = x
 	return x * scrambler
+}
+
+// Int64 returns a pseudo-random int64, uniformly distributed over its whole
+// range. It advances the sequence by one step, like [DPRNG.Uint64].
+func (thisState *DPRNG) Int64() int64 { return int64(thisState.Uint64()) }
+
+// Uint32 returns a pseudo-random uint32, taken from the high bits of one step
+// of the sequence, which are the best mixed ones of xorshift64*.
+func (thisState *DPRNG) Uint32() uint32 { return uint32(thisState.Uint64() >> 32) }
+
+// Int32 returns a pseudo-random int32; see [DPRNG.Uint32].
+func (thisState *DPRNG) Int32() int32 { return int32(thisState.Uint32()) }
+
+// Uint16 returns a pseudo-random uint16, taken from the high bits of one step
+// of the sequence.
+func (thisState *DPRNG) Uint16() uint16 { return uint16(thisState.Uint64() >> 48) }
+
+// Int16 returns a pseudo-random int16; see [DPRNG.Uint16].
+func (thisState *DPRNG) Int16() int16 { return int16(thisState.Uint16()) }
+
+// Uint8 returns a pseudo-random uint8, taken from the high bits of one step of
+// the sequence.
+func (thisState *DPRNG) Uint8() uint8 { return uint8(thisState.Uint64() >> 56) }
+
+// Int8 returns a pseudo-random int8; see [DPRNG.Uint8].
+func (thisState *DPRNG) Int8() int8 { return int8(thisState.Uint8()) }
+
+// Float32 returns a pseudo-random float32 in [0.0, 1.0), uniformly distributed
+// on the multiples of 2^-24, the full precision of a float32. It never returns
+// 1.0.
+func (thisState *DPRNG) Float32() float32 {
+	return float32(thisState.Uint64()>>40) * (1.0 / (1 << 24))
 }
 
 // Float64 returns a pseudo-random float64 in the range [0.0, 1.0) like Go’s math/rand.Float64().
@@ -94,7 +137,7 @@ func (thisState *DPRNG) Uint32N(n uint32) uint32 {
 // into scatter that pooling across processes can average out; see
 // rtcompare.Combine.
 //
-//	rng := prng.NewDPRNG(seed)
+//	rng := NewDPRNG(seed)
 //	builders := []func(){buildA, buildB}
 //	rng.Shuffle(len(builders), func(i, j int) { builders[i], builders[j] = builders[j], builders[i] })
 //	for _, build := range builders { build() }

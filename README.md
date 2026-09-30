@@ -134,7 +134,7 @@ Not sure what a warning like "resampled in blocks" or "does not clear the noise 
 
 - **Dependence between neighbouring measurements.** Resampling single observations also assumes they are exchangeable, and real measurements are mildly correlated. In AR(1) simulations the rate of false signals from identical inputs stayed at its nominal 10% up to a lag-1 correlation of 0.08, reached 13.5% at 0.2 and 21.7% at 0.4. `ValidateHarness` reports the correlation it observed; above roughly 0.2, `BlockBootstrapConfidence` resamples contiguous blocks instead.
 
-- **Deterministic input generation.** `prng.DPRNG` generates reproducible inputs across runs. `prng.CPRNG`, backed by [crypto/rand](https://pkg.go.dev/crypto/rand), is there when unpredictability or cryptographic quality is wanted instead.
+- **Deterministic input generation.** `DPRNG` generates reproducible inputs across runs. `CPRNG`, backed by [crypto/rand](https://pkg.go.dev/crypto/rand), is there when unpredictability or cryptographic quality is wanted instead.
 
 ## When to use rtcompare instead of `testing.B`
 
@@ -186,7 +186,7 @@ Across processes:
 
 Primitives:
 
-- `prng.DPRNG` / `prng.CPRNG` (package `github.com/TomTonic/rtcompare/prng`) — deterministic and cryptographic generators with `Uint64`, `Float64` and `Uint32N`. `prng.NewDPRNG(seed)` gives every seed, zero included, its own fixed sequence. `DPRNG.Shuffle` permutes, e.g. the order in which fixtures are built.
+- `DPRNG` / `CPRNG` — deterministic and cryptographic generators with `Uint64`, `Float64`, `Uint32N`, `Shuffle` and the sized integer and `Float32` methods. `NewDPRNG(seed)` gives every non-zero seed its own fixed sequence; seed `0` asks for a random one. `Shuffle` permutes, e.g. the order in which fixtures are built.
 - `GetSampleTimePrecision()` — the smallest interval the clock resolves here.
 - `Median` — the median, the mean of the two middle values for an even count.
 

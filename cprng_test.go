@@ -1,4 +1,4 @@
-package prng
+package rtcompare
 
 import (
 	"fmt"
@@ -291,3 +291,47 @@ func TestCPRNG_Uint32N_Uniformity(t *testing.T) {
 // with a very large buffer (16 KiB) with a DPRNG. It measures
 // average time per Uint64 call across multiple samples and asserts that the
 // DPRNG is faster on average than the large-buffer CPRNG.
+
+// TestCPRNGShuffleIsAPermutation checks that CPRNG.Shuffle, like the
+// deterministic generator's, only exchanges elements: whatever the order,
+// every element is still there exactly once, and degenerate sizes do nothing.
+func TestCPRNGShuffleIsAPermutation(t *testing.T) {
+	c := NewCPRNG(64)
+	xs := make([]int, 200)
+	for i := range xs {
+		xs[i] = i
+	}
+	c.Shuffle(len(xs), func(i, j int) { xs[i], xs[j] = xs[j], xs[i] })
+	seen := make([]bool, len(xs))
+	moved := 0
+	for i, x := range xs {
+		if seen[x] {
+			t.Fatalf("element %d appears twice", x)
+		}
+		seen[x] = true
+		if x != i {
+			moved++
+		}
+	}
+	if moved < 100 {
+		t.Errorf("only %d of 200 elements moved", moved)
+	}
+	for _, n := range []int{-1, 0, 1} {
+		c.Shuffle(n, func(i, j int) { t.Errorf("swap called for n=%d", n) })
+	}
+}
+
+// TestCPRNGFloatsUseFullResolution checks that CPRNG's floats stay in [0, 1)
+// and are multiples of 2^-24 and 2^-53, the full significand of each type.
+func TestCPRNGFloatsUseFullResolution(t *testing.T) {
+	c := NewCPRNG(256)
+	for range 100000 {
+		f32, f64 := c.Float32(), c.Float64()
+		if f32 < 0 || f32 >= 1 || f64 < 0 || f64 >= 1 {
+			t.Fatalf("out of range: %v %v", f32, f64)
+		}
+		if float64(f32)*(1<<24) != math.Trunc(float64(f32)*(1<<24)) || f64*(1<<53) != math.Trunc(f64*(1<<53)) {
+			t.Fatalf("not on the grid: %v %v", f32, f64)
+		}
+	}
+}

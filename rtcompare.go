@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"math"
 	"slices"
-
-	"github.com/TomTonic/rtcompare/prng"
 )
 
 // MinimumDataPoints is the fewest measurements per candidate that
@@ -204,7 +202,7 @@ func bootstrapSample(xs []float64, prngSeed uint64) []float64 {
 	if prngSeed != 0 {
 		return bootstrapSampleSeeded(xs, prngSeed)
 	}
-	return bootstrapSampleCrypto(xs, prng.NewCPRNG(bootstrapCPRNGBufferBytes))
+	return bootstrapSampleCrypto(xs, NewCPRNG(bootstrapCPRNGBufferBytes))
 }
 
 // bootstrapCPRNGBufferBytes is the buffer size used for the cryptographic
@@ -222,7 +220,7 @@ const bootstrapCPRNGBufferBytes = 8192
 // with prngSeed. It is the single-sample convenience form; callers drawing many
 // samples should use bootstrapSampleDPRNG with one shared generator.
 func bootstrapSampleSeeded(xs []float64, prngSeed uint64) []float64 {
-	rng := prng.NewDPRNG(prngSeed)
+	rng := newDPRNG(prngSeed)
 	return bootstrapSampleDPRNG(xs, &rng)
 }
 
@@ -244,7 +242,7 @@ func bootstrapSampleSeeded(xs []float64, prngSeed uint64) []float64 {
 // does not move a median; effective resample counts matched the requested ones
 // at every supported sample size. Using one stream is nevertheless the sounder
 // construction, and it costs nothing.
-func bootstrapSampleDPRNG(xs []float64, rng *prng.DPRNG) []float64 {
+func bootstrapSampleDPRNG(xs []float64, rng *DPRNG) []float64 {
 	n := len(xs)
 	sample := make([]float64, n)
 	if n == 0 {
@@ -264,7 +262,7 @@ func bootstrapSampleDPRNG(xs []float64, rng *prng.DPRNG) []float64 {
 // Sharing one stream across samples, and across both inputs of a comparison, is
 // sound: the draws are consecutive values from a single cryptographic sequence
 // and are therefore independent of one another.
-func bootstrapSampleCrypto(xs []float64, rng *prng.CPRNG) []float64 {
+func bootstrapSampleCrypto(xs []float64, rng *CPRNG) []float64 {
 	n := len(xs)
 	sample := make([]float64, n)
 	if n == 0 {
@@ -573,9 +571,9 @@ func BlockBootstrapConfidence(A, B []float64, relativeGains []float64, resamples
 // same replicates for the same seed.
 func bootstrapStream(seed uint64) func(uint32) uint32 {
 	if seed == 0 {
-		return prng.NewCPRNG(bootstrapCPRNGBufferBytes).Uint32N
+		return NewCPRNG(bootstrapCPRNGBufferBytes).Uint32N
 	}
-	rng := prng.NewDPRNG(seed)
+	rng := newDPRNG(seed)
 	return rng.Uint32N
 }
 

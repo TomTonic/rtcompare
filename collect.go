@@ -8,8 +8,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"time"
-
-	"github.com/TomTonic/rtcompare/prng"
 )
 
 // Batch runs the code under test exactly n times.
@@ -512,13 +510,13 @@ func measureInTurn(cands []Candidate, s schedule) ([][]float64, error) {
 		return nil, err
 	}
 
-	var rng prng.DPRNG
+	var rng DPRNG
 	if s.order == OrderRandom {
 		seed := s.seed
 		if seed == 0 {
 			seed = rand.Uint64()
 		}
-		rng = prng.NewDPRNG(seed)
+		rng = newDPRNG(seed)
 	}
 
 	samples := make([][]float64, len(cands))

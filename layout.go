@@ -7,8 +7,6 @@ package rtcompare
 import (
 	"runtime"
 	"sync/atomic"
-
-	"github.com/TomTonic/rtcompare/prng"
 )
 
 // Spacers holds the allocations [PerturbHeap] made. Its only purpose is to stay
@@ -82,7 +80,7 @@ const perturbLargeMax = 16 << 20
 // with and without pointers, plus a large block of up to 16 MB whose pages are
 // mostly never touched, and about a millisecond.
 func PerturbHeap(seed uint64) *Spacers {
-	rng := prng.NewDPRNG(seed)
+	rng := newDPRNG(seed)
 	sizes := smallSizes()
 	rng.Shuffle(len(sizes), func(i, j int) { sizes[i], sizes[j] = sizes[j], sizes[i] })
 

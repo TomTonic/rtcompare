@@ -1,9 +1,8 @@
-package prng
+package rtcompare
 
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"math"
 )
 
 // CPRNG is a cryptographically secure random number generator ("CryptographicPrecisionRNG")
@@ -106,49 +105,32 @@ func (c *CPRNG) Int8() int8 {
 	return int8(v)
 }
 
-// Float32 returns a uniformly distributed float32 in [0.0, 1.0).
-// This function will never return -0.0.
-// This function will never return 1.0.
-// This function will never return NaN or Inf.
-// If you need random values in a different range, scale and shift the result accordingly.
-// This function uses 23 random bits for the mantissa. This is the maximum randomness
-// that can be represented in a float32 without breaking uniformity.
-// If you need more randomness, use Float64 instead.
-// See: https://en.wikipedia.org/wiki/Single-precision_floating-point_format
+// Float32 returns a uniformly distributed float32 in [0.0, 1.0), on the
+// multiples of 2^-24: the 24 random bits of a float32's significand, so no
+// precision is left unused. It never returns 1.0, -0.0, NaN or Inf. For a
+// different range, scale and shift the result. Use [CPRNG.Float64] if you need
+// more resolution.
 func (c *CPRNG) Float32() float32 {
-	c.ensure(4)
-	u := binary.LittleEndian.Uint32(c.buf[c.bufPos : c.bufPos+4])
-	c.bufPos += 4
-
-	u &= 0x7FFFFF // 23 random bits for mantissa
-
-	const sign uint32 = 0
-	const exp uint32 = 127
-	bits := (sign << 31) | (exp << 23) | u
-	v := math.Float32frombits(bits) - 1.0
-	return v
+	return float32(c.Uint32()>>8) * (1.0 / (1 << 24))
 }
 
-// Float64 returns a uniformly distributed float64 in [0.0, 1.0).
-// This function will never return -0.0.
-// This function will never return 1.0.
-// This function will never return NaN or Inf.
-// If you need random values in a different range, scale and shift the result accordingly.
-// This function uses 52 random bits for the mantissa. This is the maximum randomness
-// that can be represented in a float64 without breaking uniformity.
-// See: https://en.wikipedia.org/wiki/Double-precision_floating-point_format
+// Float64 returns a uniformly distributed float64 in [0.0, 1.0), on the
+// multiples of 2^-53: the 53 random bits of a float64's significand, so no
+// precision is left unused. It never returns 1.0, -0.0, NaN or Inf. For a
+// different range, scale and shift the result.
 func (c *CPRNG) Float64() float64 {
-	c.ensure(8)
-	u := binary.LittleEndian.Uint64(c.buf[c.bufPos : c.bufPos+8])
-	c.bufPos += 8
+	return float64(c.Uint64()>>11) * (1.0 / (1 << 53))
+}
 
-	u &= 0x000FFFFFFFFFFFFF // 52 random bits for mantissa
-
-	const sign uint64 = 0
-	const exp uint64 = 1023
-	bits := (sign << 63) | (exp << 52) | u
-	v := math.Float64frombits(bits) - 1.0
-	return v
+// Shuffle puts n elements in a random order by calling swap(i, j) for the
+// pairs a Fisher-Yates shuffle exchanges, like math/rand's Shuffle and
+// [DPRNG.Shuffle]. n is at most 2^32; zero, one or a negative n does nothing.
+// The order is unpredictable and not reproducible; use a [DPRNG] for a
+// shuffle that has to repeat.
+func (c *CPRNG) Shuffle(n int, swap func(i, j int)) {
+	for i := n - 1; i > 0; i-- {
+		swap(i, int(c.Uint32N(uint32(i+1))))
+	}
 }
 
 // Uint32N returns a non-negative pseudo-random number in the half-open interval [0,n).

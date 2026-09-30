@@ -8,8 +8,6 @@ import (
 	"runtime/metrics"
 	"strings"
 	"time"
-
-	"github.com/TomTonic/rtcompare/prng"
 )
 
 // AutocorrelationThreshold is the lag-1 autocorrelation above which [Compare]
@@ -497,7 +495,7 @@ func CompareContext(ctx context.Context, a, b Candidate, opt CompareOptions) (Re
 // randomSeed draws a non-zero seed from cryptographic randomness, for a
 // comparison that was given none, so that the one it used can be recorded.
 func randomSeed() uint64 {
-	return prng.NewCPRNG(8).Uint64() | 1
+	return NewCPRNG(8).Uint64() | 1
 }
 
 // QuantizationGate is how many clock ticks per batch a difference has to

@@ -1,4 +1,4 @@
-package prng
+package rtcompare
 
 import (
 	"fmt"
@@ -123,11 +123,11 @@ func TestUInt32N_Frequencies(t *testing.T) {
 }
 
 // TestNewDPRNGIsDeterministicForEverySeed checks what reproducible inputs rely
-// on: every seed, zero included, gives its own fixed sequence, two generators
-// from one seed agree, and neighbouring seeds such as process indices start
+// on: every non-zero seed gives its own fixed sequence, two generators from
+// one seed agree, and neighbouring seeds such as process indices start
 // unrelated sequences rather than the same one shifted.
 func TestNewDPRNGIsDeterministicForEverySeed(t *testing.T) {
-	for _, seed := range []uint64{0, 1, 2, 42, math.MaxUint64} {
+	for _, seed := range []uint64{1, 2, 42, math.MaxUint64} {
 		t.Run(fmt.Sprintf("repeats the sequence of seed %d", seed), func(t *testing.T) {
 			a, b := NewDPRNG(seed), NewDPRNG(seed)
 			distinct := map[uint64]bool{}
@@ -152,5 +152,53 @@ func TestNewDPRNGIsDeterministicForEverySeed(t *testing.T) {
 	}
 	if near > 0 {
 		t.Errorf("seeds 1 and 2 gave nearly equal values %d times in 64 draws", near)
+	}
+}
+
+// TestNewDPRNGSeedZeroIsRandom checks the promise callers rely on when they
+// want a different sequence per run: seed zero does not give a fixed sequence.
+// Two generators made with seed zero differ, and neither equals the sequence
+// of any fixed seed by construction.
+func TestNewDPRNGSeedZeroIsRandom(t *testing.T) {
+	a, b := NewDPRNG(0), NewDPRNG(0)
+	if a.Uint64() == b.Uint64() && a.Uint64() == b.Uint64() {
+		t.Error("two generators seeded with zero produced the same values")
+	}
+}
+
+// TestDPRNGIntegerMethodsAreUniform checks the sized integer methods a
+// caller picks for convenience: over many draws every value of a uint8 and
+// of a uint16 turns up about equally often, and the signed variants are the
+// same bits reinterpreted.
+func TestDPRNGIntegerMethodsAreUniform(t *testing.T) {
+	const samples = 1 << 20
+	rng := NewDPRNG(5)
+	c8 := make([]int, 256)
+	c16 := make([]int, 65536)
+	for range samples {
+		c8[rng.Uint8()]++
+		c16[rng.Uint16()]++
+	}
+	requireUniform(t, "DPRNG.Uint8", c8)
+	requireUniform(t, "DPRNG.Uint16", c16)
+
+	a, b := NewDPRNG(9), NewDPRNG(9)
+	for range 100 {
+		if int8(a.Uint8()) != b.Int8() || int16(a.Uint16()) != b.Int16() ||
+			int32(a.Uint32()) != b.Int32() || int64(a.Uint64()) != b.Int64() {
+			t.Fatal("signed method does not return the bits of the unsigned one")
+		}
+	}
+}
+
+// TestFloat32RangeAndResolution checks that DPRNG.Float32 stays in [0, 1) and
+// uses all 24 significand bits: its values are multiples of 2^-24.
+func TestFloat32RangeAndResolution(t *testing.T) {
+	rng := NewDPRNG(3)
+	for range 100000 {
+		f := rng.Float32()
+		if f < 0 || f >= 1 || float64(f)*(1<<24) != math.Trunc(float64(f)*(1<<24)) {
+			t.Fatalf("Float32 returned %v", f)
+		}
 	}
 }

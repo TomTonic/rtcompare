@@ -1,7 +1,6 @@
 package rtcompare
 
 import (
-	"github.com/TomTonic/rtcompare/prng"
 	"math"
 	"slices"
 	"strings"
@@ -16,7 +15,7 @@ func steadyCandidate(cost uint64) Candidate {
 	return Candidate{
 		Name: "steady",
 		Batch: func(n uint64) {
-			rng := prng.NewDPRNG(0x2468)
+			rng := NewDPRNG(0x2468)
 			var acc uint64
 			for range n * cost {
 				acc ^= rng.Uint64()
@@ -104,7 +103,7 @@ func TestValidateHarnessCalibratesOnceWhenInnerLoopsUnset(t *testing.T) {
 	seen := map[uint64]int{}
 	probe := Candidate{Name: "probe", Batch: func(n uint64) {
 		seen[n]++
-		rng := prng.NewDPRNG(0x99)
+		rng := NewDPRNG(0x99)
 		var acc uint64
 		for range n {
 			acc ^= rng.Uint64()
@@ -338,7 +337,7 @@ func TestValidatePairInterleavesTheCandidates(t *testing.T) {
 	mk := func(name string) Candidate {
 		return Candidate{Name: name, Batch: func(n uint64) {
 			log = append(log, name)
-			rng := prng.NewDPRNG(0x2468)
+			rng := NewDPRNG(0x2468)
 			var acc uint64
 			for range n {
 				acc ^= rng.Uint64()

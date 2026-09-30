@@ -1,7 +1,6 @@
 package rtcompare
 
 import (
-	"github.com/TomTonic/rtcompare/prng"
 	"math"
 	"math/rand"
 	"reflect"
@@ -648,7 +647,7 @@ func TestBlockSampleShapeAndContent(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := prng.NewDPRNG(99)
+	rng := NewDPRNG(99)
 	for _, L := range []int{1, 3, 7, 40, 100} {
 		sample := blockSample(xs, L, rng.Uint32N)
 		if len(sample) != len(xs) {
@@ -673,7 +672,7 @@ func TestBlockSampleKeepsNeighboursTogether(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := prng.NewDPRNG(7)
+	rng := NewDPRNG(7)
 
 	runsFor := func(L int) float64 {
 		total, consecutive := 0, 0
@@ -703,7 +702,7 @@ func TestBlockSampleKeepsNeighboursTogether(t *testing.T) {
 func TestBlockBootstrapWithLengthOneMatchesPlain(t *testing.T) {
 	// Block length one is single-observation resampling. The two must agree
 	// exactly, which is what lets them share an implementation.
-	rng := prng.NewDPRNG(2024)
+	rng := NewDPRNG(2024)
 	a := make([]float64, 51)
 	b := make([]float64, 51)
 	for i := range a {
@@ -723,7 +722,7 @@ func TestBlockBootstrapWithLengthOneMatchesPlain(t *testing.T) {
 }
 
 func TestBlockBootstrapZeroLengthUsesAuto(t *testing.T) {
-	rng := prng.NewDPRNG(555)
+	rng := NewDPRNG(555)
 	a := make([]float64, 101)
 	b := make([]float64, 101)
 	for i := range a {
@@ -753,7 +752,7 @@ func TestBlockBootstrapAgreesOnSeparatedData(t *testing.T) {
 
 // ar1Series generates an AR(1) series with the given lag-1 correlation, holding
 // the marginal variance fixed so that only the dependence changes.
-func ar1Series(rng *prng.DPRNG, n int, rho float64) []float64 {
+func ar1Series(rng *DPRNG, n int, rho float64) []float64 {
 	s := make([]float64, n)
 	sd := math.Sqrt(1 - rho*rho)
 	gauss := func() float64 {
@@ -782,7 +781,7 @@ func TestBlockBootstrapImprovesCalibrationUnderDependence(t *testing.T) {
 		rho       = 0.5
 	)
 	rate := func(useBlocks bool) float64 {
-		rng := prng.NewDPRNG(0xCAFE)
+		rng := NewDPRNG(0xCAFE)
 		out := 0
 		for range trials {
 			a := ar1Series(&rng, n, rho)
@@ -818,7 +817,7 @@ func TestBlockBootstrapDoesNoHarmWithoutDependence(t *testing.T) {
 		resamples = 800
 		n         = 101
 	)
-	rng := prng.NewDPRNG(0xFEED)
+	rng := NewDPRNG(0xFEED)
 	out := 0
 	for range trials {
 		a := ar1Series(&rng, n, 0)
@@ -845,7 +844,7 @@ func TestLag1Autocorrelation(t *testing.T) {
 	}
 	// A strongly dependent series must show it; an alternating one must be
 	// strongly negative.
-	rng := prng.NewDPRNG(4242)
+	rng := NewDPRNG(4242)
 	if got := lag1Autocorrelation(ar1Series(&rng, 4000, 0.7)); got < 0.6 || got > 0.8 {
 		t.Errorf("expected lag-1 near 0.7 for an AR(1) with rho=0.7, got %v", got)
 	}
@@ -866,7 +865,7 @@ func TestBlockSampleClampsToHalfTheInput(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := prng.NewDPRNG(31337)
+	rng := NewDPRNG(31337)
 	for _, L := range []int{20, 40, 100, -5, 0} {
 		identical := 0
 		const draws = 100
@@ -892,7 +891,7 @@ func TestBlockSampleClampsToHalfTheInput(t *testing.T) {
 func TestBlockSampleSurvivesTinyInputs(t *testing.T) {
 	// The clamp must not underflow the start count on inputs too short to hold
 	// two blocks.
-	rng := prng.NewDPRNG(11)
+	rng := NewDPRNG(11)
 	for n := 1; n <= 4; n++ {
 		xs := make([]float64, n)
 		for i := range xs {
@@ -916,7 +915,7 @@ func TestBlockBootstrapRejectsDegenerateLengths(t *testing.T) {
 	// Identical distributions, so the confidence must land near 0.5. Before the
 	// clamp, an oversized or negative block length produced exactly 0 or 1,
 	// which reads as certainty.
-	rng := prng.NewDPRNG(12345)
+	rng := NewDPRNG(12345)
 	a := make([]float64, 101)
 	b := make([]float64, 101)
 	for i := range a {
@@ -1142,7 +1141,7 @@ func TestBootstrapSampleCryptoSharesGeneratorStream(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := prng.NewCPRNG(bootstrapCPRNGBufferBytes)
+	rng := NewCPRNG(bootstrapCPRNGBufferBytes)
 
 	first := bootstrapSampleCrypto(xs, rng)
 	identical := 0
@@ -1308,7 +1307,7 @@ func serialCorrelation(xs []float64) float64 {
 // TestBootstrapSampleDPRNGHasNoSerialCorrelation guards against reintroducing a
 // per-replicate seeding scheme.
 //
-// Seeding a fresh prng.DPRNG per replicate from consecutive seeds used to leave a
+// Seeding a fresh DPRNG per replicate from consecutive seeds used to leave a
 // lag-1 correlation of 0.095 between the first index of consecutive samples,
 // against a noise band of roughly 0.007 at the sample count used in that
 // measurement. Drawing every replicate from one stream removes it.
@@ -1322,7 +1321,7 @@ func TestBootstrapSampleDPRNGHasNoSerialCorrelation(t *testing.T) {
 		xs[i] = float64(i)
 	}
 
-	rng := prng.NewDPRNG(0xDEADBEEF)
+	rng := NewDPRNG(0xDEADBEEF)
 	first := make([]float64, replicates)
 	for i := range replicates {
 		first[i] = bootstrapSampleDPRNG(xs, &rng)[0]
@@ -1346,7 +1345,7 @@ func TestBootstrapConfidenceSeededAdvancesTheStream(t *testing.T) {
 	for i := range xs {
 		xs[i] = float64(i)
 	}
-	rng := prng.NewDPRNG(4242)
+	rng := NewDPRNG(4242)
 	prev := bootstrapSampleDPRNG(xs, &rng)
 	repeats := 0
 	for range 500 {
@@ -1367,7 +1366,7 @@ func TestBootstrapConfidenceSeededStillDeterministic(t *testing.T) {
 	// Spread-out data, so that which values a replicate happens to draw actually
 	// moves the median. With constant inputs every replicate yields the same
 	// delta and the seed provably cannot matter.
-	rng := prng.NewDPRNG(7)
+	rng := NewDPRNG(7)
 	a := make([]float64, 41)
 	b := make([]float64, 41)
 	for i := range a {
