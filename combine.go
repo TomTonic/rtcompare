@@ -153,21 +153,13 @@ func (p Pooled) ProcessesFor(abs, rel float64) int {
 // String renders the pooled result as a short multi-line summary.
 func (p Pooled) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "difference %+.2f%% [%+.2f%%, %+.2f%%] at %.0f%% confidence; B/A %.3f× [%.3f×, %.3f×]; pooled over %d processes\n",
-		p.Delta*100, p.Low*100, p.High*100, p.Level*100, 1/(1-p.Delta), 1/(1-p.Low), 1/(1-p.High), p.Processes)
-	fmt.Fprintf(&b, "scatter between processes %.3f%%, within one %.3f%% (%.1fx), I² %.2f\n",
-		p.SpreadBetween*100, p.SpreadWithin*100, p.Inflation, p.I2)
-	switch {
-	case p.Resolved && p.Delta > 0:
-		b.WriteString("resolved: A is faster than B\n")
-	case p.Resolved:
-		b.WriteString("resolved: A is slower than B\n")
-	default:
-		b.WriteString("not resolved: these processes did not establish a difference\n")
-	}
-	for _, w := range p.Warnings {
-		fmt.Fprintf(&b, "  warning: %s\n", w)
-	}
+	fmt.Fprintf(&b, "Pooled over %d processes.\n", p.Processes)
+	b.WriteString(differenceLines(p.Delta, p.Low, p.High, p.Level))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "The processes disagree by %s (each one alone: %s). A single process's interval would have been about %.1f times too narrow (I²: %.2f).\n",
+		percent(p.SpreadBetween), percent(p.SpreadWithin), p.Inflation, p.I2)
+	b.WriteString("\n" + verdictLine(p.Resolved, p.Delta, true, "These processes") + "\n")
+	b.WriteString(warningLines(p.Warnings))
 	return strings.TrimRight(b.String(), "\n")
 }
 

@@ -78,25 +78,35 @@ func main() {
 which prints something like
 
 ```
-A 712.7 per op, B 1262 per op
-difference +43.52% [+42.31%, +44.48%] at 95% confidence; B/A 1.771× [1.733×, 1.801×]
-noise floor 1.765%, autocorrelation +0.344, resampled in blocks of 5
-resolved: A is faster than B
-  warning: candidate B drifted during the run, shifting -7.12% from its first
-  half to its second; the machine did not hold still
-  confidence that A beats B by 5.00%: 100.0%
+A: 712.7 ns per operation (median)
+B: 1262 ns per operation (median)
+A needs 43.5% less time than B: B takes 1.77 times as long as A.
+With 95% confidence the difference lies between 42.3% and 44.5% less time (B takes between 1.73 and 1.80 times as long as A).
+Noise floor: 1.76%. Identical code measured against itself on this setup can look that different, so smaller differences mean nothing.
+Neighbouring measurements are correlated (autocorrelation +0.34), so they were resampled in blocks of 5.
+
+Verdict: RESOLVED. A is faster than B: the difference is real, as its interval excludes zero and it exceeds the noise floor.
+
+Warnings:
+  - candidate B drifted during the run: its measurements were 7.12% lower in the second half than in the first, so the machine did not hold still
+
+Confidence that A needs at least 5% less time than B: 100.0%
+Confidence that A needs at least 10% less time than B: 100.0%
+Confidence that A needs at least 20% less time than B: 100.0%
 ```
+
+[HOWTO.md](HOWTO.md#reading-the-printed-report) explains each line and what to do about a warning.
 
 `Compare` validates both candidates against themselves before comparing them, so it costs a few seconds. Set `SkipValidation` to pay only for the measurement, accepting that the result then has no noise floor to be read against. `cmd/rtcompare-example` shows the one call, and then the same measurements taken apart by hand.
 
 ## Which call do I need?
 
-| What you compare | Call |
-|---|---|
-| Two functions or code paths whose data fits in the CPU caches | `rtcompare.Compare` |
-| Data structures under insertions and deletions | `workload.Compare` |
-| Anything whose data is larger than the caches, or full of pointers (trees, linked structures, maps of heap objects) | `multiproc.Main` or `multiproc.RunTest` |
-| Data structures under insertions and deletions, larger than the caches | `workload.Suite` with `multiproc.MainSuite` or `multiproc.RunTestSuite` |
+| What you compare | Call | Details |
+|---|---|---|
+| Two functions or code paths whose data fits in the CPU caches | [`rtcompare.Compare`](https://pkg.go.dev/github.com/TomTonic/rtcompare#Compare) | [The five-minute version](HOWTO.md#the-five-minute-version) |
+| Data structures under insertions and deletions | [`workload.Compare`](https://pkg.go.dev/github.com/TomTonic/rtcompare/workload#Compare) | [Benchmarking insertions and deletions](HOWTO.md#benchmarking-insertions-and-deletions) |
+| Anything whose data is larger than the caches, or full of pointers (trees, linked structures, maps of heap objects) | [`multiproc.Main`](https://pkg.go.dev/github.com/TomTonic/rtcompare/multiproc#Main) or [`multiproc.RunTest`](https://pkg.go.dev/github.com/TomTonic/rtcompare/multiproc#RunTest) | [One process is one observation](HOWTO.md#one-process-is-one-observation) |
+| Data structures under insertions and deletions, larger than the caches | [`workload.Suite`](https://pkg.go.dev/github.com/TomTonic/rtcompare/workload#Suite) with [`multiproc.MainSuite`](https://pkg.go.dev/github.com/TomTonic/rtcompare/multiproc#MainSuite) or [`multiproc.RunTestSuite`](https://pkg.go.dev/github.com/TomTonic/rtcompare/multiproc#RunTestSuite) | [Benchmarking insertions and deletions](HOWTO.md#benchmarking-insertions-and-deletions), then [One process is one observation](HOWTO.md#one-process-is-one-observation) |
 
 "Fits in the caches" means, as a rule of thumb, well below 16 MB of live data for both candidates together; `Compare` warns above that. The reason for the last two rows is explained in [One process is one observation](HOWTO.md#one-process-is-one-observation).
 

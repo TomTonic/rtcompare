@@ -345,18 +345,18 @@ func TestReportString(t *testing.T) {
 		Confidence: Confidences{{Threshold: 0, Confidence: 1.0}, {Threshold: 0.2, Confidence: 0.99}},
 	}
 	s := r.String()
-	for _, want := range []string{"per op", "difference", "noise floor", "blocks of 5", "resolved: A is faster", "warning: something was off", "confidence"} {
+	for _, want := range []string{"ns per operation", "less time than B", "Noise floor", "blocks of 5", "Verdict: RESOLVED. A is faster", "- something was off", "Confidence"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("String() missing %q:\n%s", want, s)
 		}
 	}
 	// Thresholds must print in a stable ascending order.
-	if i, j := strings.Index(s, "0.00%"), strings.Index(s, "20.00%"); i < 0 || j < 0 || i > j {
+	if i, j := strings.Index(s, "no more time than B"), strings.Index(s, "20% less time than B"); i < 0 || j < 0 || i > j {
 		t.Errorf("confidence lines are not in ascending threshold order:\n%s", s)
 	}
 
 	unresolved := Report{Estimate: Estimate{Delta: 0.001}, Autocorrelation: 0.0, BlockLength: 1}
-	if s := unresolved.String(); !strings.Contains(s, "not resolved") || !strings.Contains(s, "not measured") {
+	if s := unresolved.String(); !strings.Contains(s, "NOT RESOLVED") || !strings.Contains(s, "not measured") {
 		t.Errorf("an unvalidated, unresolved report should say so:\n%s", s)
 	}
 	slower := Report{Estimate: Estimate{Delta: -0.5}, Resolved: true, Validated: true, BlockLength: 1}
