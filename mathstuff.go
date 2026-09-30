@@ -2,10 +2,7 @@ package rtcompare
 
 import (
 	"math"
-	"math/rand/v2"
 	"slices"
-
-	"github.com/TomTonic/rtcompare/prng"
 )
 
 // Median computes the median of the provided slice of float64.
@@ -58,8 +55,8 @@ func quickselect(xs []float64, k uint64) float64 {
 		return math.NaN()
 	}
 	// Random pivots guard against inputs that happen to be ordered; the
-	// generator only picks positions, so a fast non-deterministic seed will do.
-	rng := prng.NewDPRNG(rand.Uint64())
+	// generator only picks positions, so a random seed (zero) will do.
+	rng := NewDPRNG(0)
 	low, high := uint64(0), uint64(len(xs)-1)
 	for low <= high {
 		pivotIndex := rng.Uint64()%(high-low+1) + low

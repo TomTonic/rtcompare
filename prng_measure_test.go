@@ -1,4 +1,4 @@
-package prng_test
+package rtcompare_test
 
 // These tests measure the generators with rtcompare itself, which imports
 // this package, so they live in the external test package.
@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/TomTonic/rtcompare"
-	"github.com/TomTonic/rtcompare/prng"
 )
 
 // skipIfGHActions skips timing tests that shared CI runners cannot hold to.
@@ -34,8 +33,8 @@ func TestCPRNG_BufferSizePerformance(t *testing.T) {
 	const expectedSpeedup = 0.32 // expect large-buffer CPRNG to be at least 32% faster than small-buffer CPRNG. This conservative estimate is required for GitHub Actions CI. On an M1 Pro MacBook the speedup is usually around 25x.
 	const minConfidence = 0.95   // require at least 95% confidence
 
-	small := prng.NewCPRNG(16)
-	large := prng.NewCPRNG(8192)
+	small := rtcompare.NewCPRNG(16)
+	large := rtcompare.NewCPRNG(8192)
 
 	timesSmall := make([]float64, 0, repeats)
 	timesLarge := make([]float64, 0, repeats)
@@ -90,8 +89,8 @@ func TestCPRNG_BufferSizePerformance(t *testing.T) {
 func TestCPRNG_vs_DPRNG_Performance(t *testing.T) {
 	const cprngBufferSize = 16384
 
-	cprng := prng.NewCPRNG(cprngBufferSize)
-	dprng := prng.NewDPRNG(123456)
+	cprng := rtcompare.NewCPRNG(cprngBufferSize)
+	dprng := rtcompare.NewDPRNG(123456)
 
 	// Both candidates capture one pointer-sized value and accumulate into the
 	// same package-level sink, so neither gets an advantage from how its
@@ -192,8 +191,8 @@ func TestUInt32N_CompareToModulo(t *testing.T) {
 			resultsObs := make([]float64, 0, iterations)
 			resultsRef := make([]float64, 0, iterations)
 			seed := uint64(0x1234567890ABCDEF)
-			rngObs := prng.NewDPRNG(seed)
-			rngRef := prng.NewDPRNG(seed)
+			rngObs := rtcompare.NewDPRNG(seed)
+			rngRef := rtcompare.NewDPRNG(seed)
 
 			for range iterations {
 				for i := range countsObs {

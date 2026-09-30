@@ -76,7 +76,6 @@ import (
 	"time"
 
 	"github.com/TomTonic/rtcompare"
-	"github.com/TomTonic/rtcompare/prng"
 )
 
 // The environment variables through which a parent tells a child that it is
@@ -226,10 +225,10 @@ func (p *Process) Record(name string, r rtcompare.Report) {
 
 // Rand returns a generator seeded from this process's seed, independent of the
 // heap perturbation, for shuffling the order in which many fixtures are built;
-// see [prng.DPRNG.Shuffle]. For two fixtures, alternate by Index instead,
+// see [rtcompare.DPRNG.Shuffle]. For two fixtures, alternate by Index instead,
 // which balances exactly where a random draw over a few processes rarely does.
-func (p *Process) Rand() *prng.DPRNG {
-	rng := prng.NewDPRNG(p.Seed ^ 0x5DEECE66D)
+func (p *Process) Rand() *rtcompare.DPRNG {
+	rng := rtcompare.NewDPRNG((p.Seed ^ 0x5DEECE66D) | 1)
 	return &rng
 }
 

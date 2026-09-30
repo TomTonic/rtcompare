@@ -1,7 +1,6 @@
 package rtcompare
 
 import (
-	"github.com/TomTonic/rtcompare/prng"
 	"runtime"
 	"slices"
 	"testing"
@@ -19,7 +18,7 @@ func TestDPRNGShuffleIsASeededPermutation(t *testing.T) {
 		for i := range xs {
 			xs[i] = i
 		}
-		rng := prng.NewDPRNG(seed)
+		rng := NewDPRNG(seed)
 		rng.Shuffle(len(xs), func(i, j int) { xs[i], xs[j] = xs[j], xs[i] })
 		return xs
 	}
@@ -38,7 +37,7 @@ func TestDPRNGShuffleIsASeededPermutation(t *testing.T) {
 		}
 	}
 	for _, n := range []int{-1, 0, 1} {
-		rng := prng.NewDPRNG(1)
+		rng := NewDPRNG(1)
 		rng.Shuffle(n, func(i, j int) { t.Errorf("swap called for n=%d", n) })
 	}
 }
@@ -49,7 +48,7 @@ func TestDPRNGShuffleIsASeededPermutation(t *testing.T) {
 func TestDPRNGShuffleIsUniform(t *testing.T) {
 	const trials = 60000
 	counts := map[[3]int]int{}
-	rng := prng.NewDPRNG(42)
+	rng := NewDPRNG(42)
 	for range trials {
 		xs := [3]int{0, 1, 2}
 		rng.Shuffle(3, func(i, j int) { xs[i], xs[j] = xs[j], xs[i] })

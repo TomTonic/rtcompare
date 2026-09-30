@@ -19,7 +19,6 @@ import (
 	"sort"
 
 	"github.com/TomTonic/rtcompare"
-	"github.com/TomTonic/rtcompare/prng"
 )
 
 // sink absorbs the results of measured work. Assigning to a package-level
@@ -126,7 +125,7 @@ func sortCandidate(name string, sortFloats func([]float64)) rtcompare.Candidate 
 	return rtcompare.Candidate{
 		Name: name,
 		Batch: func(n uint64) {
-			rng := prng.NewDPRNG(0x5EED)
+			rng := rtcompare.NewDPRNG(0x5EED)
 			work := make([]float64, arraySize)
 			var acc float64
 			for range n {

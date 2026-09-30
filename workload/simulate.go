@@ -1,6 +1,6 @@
 package workload
 
-import "github.com/TomTonic/rtcompare/prng"
+import "github.com/TomTonic/rtcompare"
 
 // simulation produces a stream by playing it out: it tracks which transient
 // elements are present at every point, so that a deletion can only name one
@@ -8,7 +8,7 @@ import "github.com/TomTonic/rtcompare/prng"
 // streams valid by construction.
 type simulation struct {
 	c   Config
-	rng prng.DPRNG
+	rng rtcompare.DPRNG
 	ops []Op
 
 	// permanent holds the elements to be inserted that remain at the end,
@@ -44,7 +44,7 @@ type simulation struct {
 func newSimulation(c Config, target, transients int, atRest bool) *simulation {
 	s := &simulation{
 		c:              c,
-		rng:            prng.NewDPRNG(c.Seed),
+		rng:            rtcompare.NewDPRNG(rngSeed(c.Seed)),
 		nextTransient:  uint32(target),
 		transientsLeft: transients,
 		live:           liveSet{policy: c.Victims},
@@ -219,7 +219,7 @@ func (l *liveSet) len() int { return len(l.ids) - l.head }
 func (l *liveSet) add(id uint32) { l.ids = append(l.ids, id) }
 
 // remove takes out the element the policy selects and returns it.
-func (l *liveSet) remove(rng *prng.DPRNG) uint32 {
+func (l *liveSet) remove(rng *rtcompare.DPRNG) uint32 {
 	switch l.policy {
 	case FIFO:
 		id := l.ids[l.head]
@@ -291,7 +291,7 @@ func (x *indexSet) remove(id uint32) {
 	x.pos[id] = -1
 }
 
-func (x *indexSet) random(rng *prng.DPRNG) uint32 {
+func (x *indexSet) random(rng *rtcompare.DPRNG) uint32 {
 	return x.ids[rng.Uint32N(uint32(len(x.ids)))]
 }
 
@@ -300,4 +300,14 @@ func (x *indexSet) random(rng *prng.DPRNG) uint32 {
 // as hits are.
 func missPool(missBase uint32) uint32 {
 	return max(1, missBase)
+}
+
+// rngSeed maps a Config seed to a DPRNG seed. NewDPRNG treats zero as a request
+// for a random seed, whereas a Config with Seed zero, the default, must give
+// the same stream every time.
+func rngSeed(seed uint64) uint64 {
+	if seed == 0 {
+		return 0x5EED5EED5EED5EED
+	}
+	return seed
 }
