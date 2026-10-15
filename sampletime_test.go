@@ -12,15 +12,15 @@ import (
 
 func TestSampleTime(t *testing.T) {
 	voidvar := int64(17)
-	t1 := sampleTime()
-	_ = sampleTime()
+	t1 := SampleTime()
+	_ = SampleTime()
 	t1a := time.Now()
 	time.Sleep(3*time.Second + 30*time.Millisecond)
-	t2 := sampleTime() // one sleep, one sampleTime() call, and one time.Now() call in between the two sampleTime() calls
+	t2 := SampleTime() // one sleep, one SampleTime() call, and one time.Now() call in between the two SampleTime() calls
 	voidvar ^= int64(time.Now().UnixNano())
-	t2a := time.Now() // one sleep, one sampleTime() call, and one time.Now() call in between the two time.Now() calls
+	t2a := time.Now() // one sleep, one SampleTime() call, and one time.Now() call in between the two time.Now() calls
 
-	diff := diffTimeStamps(t1, t2)
+	diff := DiffTimeStamps(t1, t2)
 	diffa := t2a.Sub(t1a)
 	// Both measurements are in nanoseconds and should not differ by more than
 	// 0.1%. voidvar is printed so that the compiler cannot drop the calls that

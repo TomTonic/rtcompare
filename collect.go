@@ -605,10 +605,10 @@ func timeBatch(c Candidate, n uint64, gc bool) int64 {
 	if gc {
 		runtime.GC()
 	}
-	t1 := sampleTime()
+	t1 := SampleTime()
 	c.Batch(n)
-	t2 := sampleTime()
-	elapsed := diffTimeStamps(t1, t2)
+	t2 := SampleTime()
+	elapsed := DiffTimeStamps(t1, t2)
 	if c.Teardown != nil {
 		c.Teardown()
 	}
